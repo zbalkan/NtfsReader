@@ -605,12 +605,12 @@ namespace System.IO.Filesystem.Ntfs
 
             if (!ReadFile(_volumeHandle, (IntPtr)buffer, (uint)len, out var read, ref overlapped))
             {
-                throw new Exception("Unable to read volume information");
+                throw new NtfsException("Unable to read volume information");
             }
 
             if (read != (uint)len)
             {
-                throw new Exception("Unable to read volume information");
+                throw new NtfsException("Unable to read volume information");
             }
         }
 
@@ -705,7 +705,7 @@ namespace System.IO.Filesystem.Ntfs
 
                 if (bootSector->Signature != DEFAULT_NTFS_BOOT_SIGNATURE)
                 {
-                    throw new Exception("This is not an NTFS disk.");
+                    throw new NtfsException("This is not an NTFS disk.");
                 }
 
                 var diskInfo = new DiskInfoWrapper
@@ -763,13 +763,13 @@ namespace System.IO.Filesystem.Ntfs
                 /* Check if we are inside the buffer. */
                 if (Index * sizeof(ushort) >= len)
                 {
-                    throw new Exception("USA data indicates that data is missing, the MFT may be corrupt.");
+                    throw new NtfsException("USA data indicates that data is missing, the MFT may be corrupt.");
                 }
 
                 // Check if the last 2 bytes of the sector contain the Update Sequence Number.
                 if (wordBuffer[Index] != UpdateSequenceArray[0])
                 {
-                    throw new Exception("USA fixup word is not equal to the Update Sequence Number, the MFT may be corrupt.");
+                    throw new NtfsException("USA fixup word is not equal to the Update Sequence Number, the MFT may be corrupt.");
                 }
 
                 /* Replace the last 2 bytes in the sector with the value from the Usa array. */
@@ -790,7 +790,7 @@ namespace System.IO.Filesystem.Ntfs
                 runLengthBytes[i] = runData[index];
                 if (++index >= runDataLength)
                 {
-                    throw new Exception("Datarun is longer than buffer, the MFT may be corrupt.");
+                    throw new NtfsException("Datarun is longer than buffer, the MFT may be corrupt.");
                 }
             }
             return runLength;
@@ -810,7 +810,7 @@ namespace System.IO.Filesystem.Ntfs
                 runOffsetBytes[i] = runData[index];
                 if (++index >= runDataLength)
                 {
-                    throw new Exception("Datarun is longer than buffer, the MFT may be corrupt.");
+                    throw new NtfsException("Datarun is longer than buffer, the MFT may be corrupt.");
                 }
             }
 
@@ -840,12 +840,12 @@ namespace System.IO.Filesystem.Ntfs
             /* Sanity check. */
             if (RunData == null || RunDataLength == 0)
             {
-                throw new Exception("nothing to read");
+                throw new NtfsException("nothing to read");
             }
 
             if (WantedLength >= uint.MaxValue)
             {
-                throw new Exception("too many bytes to read");
+                throw new NtfsException("too many bytes to read");
             }
 
             /* We have to round up the WantedLength to the nearest sector. For some
@@ -874,7 +874,7 @@ namespace System.IO.Filesystem.Ntfs
 
                     if (++Index >= RunDataLength)
                     {
-                        throw new Exception("Error: datarun is longer than buffer, the MFT may be corrupt.");
+                        throw new NtfsException("Error: datarun is longer than buffer, the MFT may be corrupt.");
                     }
 
                     var RunLength =
@@ -953,7 +953,7 @@ namespace System.IO.Filesystem.Ntfs
                 if ((AttributeOffset + 4 > BufLength) || attribute->Length < 3 ||
                     (AttributeOffset + attribute->Length > BufLength))
                 {
-                    throw new Exception("Error: attribute in Inode %I64u is bigger than the data, the MFT may be corrupt.");
+                    throw new NtfsException("Error: attribute in Inode %I64u is bigger than the data, the MFT may be corrupt.");
                 }
 
                 //attributes list needs to be processed at the end
@@ -1139,7 +1139,7 @@ namespace System.IO.Filesystem.Ntfs
 
                 if (++index >= runDataLength)
                 {
-                    throw new Exception("Error: datarun is longer than buffer, the MFT may be corrupt.");
+                    throw new NtfsException("Error: datarun is longer than buffer, the MFT may be corrupt.");
                 }
 
                 var runLength =
@@ -1199,12 +1199,12 @@ namespace System.IO.Filesystem.Ntfs
 
             if (ntfsFileRecordHeader->AttributeOffset >= length)
             {
-                throw new Exception("Error: attributes in Inode %I64u are outside the FILE record, the MFT may be corrupt.");
+                throw new NtfsException("Error: attributes in Inode %I64u are outside the FILE record, the MFT may be corrupt.");
             }
 
             if (ntfsFileRecordHeader->BytesInUse > length)
             {
-                throw new Exception("Error: in Inode %I64u the record is bigger than the size of the buffer, the MFT may be corrupt.");
+                throw new NtfsException("Error: in Inode %I64u the record is bigger than the size of the buffer, the MFT may be corrupt.");
             }
 
             //make the file appear in the rootdirectory by default
@@ -1228,7 +1228,7 @@ namespace System.IO.Filesystem.Ntfs
             ulong Vcn = 0;
             ulong MaxMftBitmapBytes = 0;
 
-            var bitmapStream = SearchStream(streams, AttributeType.AttributeBitmap) ?? throw new Exception("No Bitmap Data");
+            var bitmapStream = SearchStream(streams, AttributeType.AttributeBitmap) ?? throw new NtfsException("No Bitmap Data");
             foreach (var fragment in bitmapStream.Fragments)
             {
                 if (fragment.Lcn != VIRTUAL_FRAGMENT)
@@ -1294,7 +1294,7 @@ namespace System.IO.Filesystem.Ntfs
 
                 if (!ProcessMftRecord(buffer, _diskInfo.BytesPerMftRecord, 0, out var mftNode, mftStreams, true))
                 {
-                    throw new Exception("Can't interpret Mft Record");
+                    throw new NtfsException("Can't interpret Mft Record");
                 }
 
                 //the bitmap data contains all used inodes on the disk
