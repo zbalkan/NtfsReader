@@ -332,9 +332,6 @@ namespace System.IO.Filesystem.Ntfs
 
             public IList<IFragment> Fragments {
                 get {
-                    //if ((_reader._retrieveMode & RetrieveMode.Fragments) != RetrieveMode.Fragments)
-                    //    throw new NotSupportedException("The fragments haven't been retrieved. Make sure to use the proper RetrieveMode.");
-
                     IList<Fragment> fragments =
                         _reader._streams[_parentNode.NodeIndex][_streamIndex].Fragments;
 
@@ -1058,44 +1055,6 @@ namespace System.IO.Filesystem.Ntfs
                     }
                 }
             }
-
-            //for (uint AttributeOffset = 0; AttributeOffset < BufLength; AttributeOffset = AttributeOffset + attribute->Length)
-            //{
-            //    attribute = (Attribute*)&ptr[AttributeOffset];
-
-            //    if (*(UInt32*)attribute == 0xFFFFFFFF)
-            //        break;
-
-            //    if (attribute->AttributeType != AttributeType.AttributeAttributeList)
-            //        continue;
-
-            //    if (attribute->Nonresident == 0)
-            //    {
-            //        ResidentAttribute* residentAttribute = (ResidentAttribute*)attribute;
-
-            //        ProcessAttributeList(
-            //            node,
-            //            ptr + AttributeOffset + residentAttribute->ValueOffset,
-            //            residentAttribute->ValueLength,
-            //            depth
-            //            );
-            //    }
-            //    else
-            //    {
-            //        NonResidentAttribute* nonResidentAttribute = (NonResidentAttribute*)attribute;
-
-            //        byte[] buffer =
-            //            ProcessNonResidentData(
-            //                ptr + AttributeOffset + nonResidentAttribute->RunArrayOffset,
-            //                attribute->Length - nonResidentAttribute->RunArrayOffset,
-            //                0,
-            //                nonResidentAttribute->DataSize
-            //          );
-
-            //        fixed (byte* bufPtr = buffer)
-            //            ProcessAttributeList(node, bufPtr, nonResidentAttribute->DataSize, depth + 1);
-            //    }
-            //}
 
             if (streams?.Count > 0)
             {

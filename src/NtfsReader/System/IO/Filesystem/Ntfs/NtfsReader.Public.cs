@@ -143,6 +143,7 @@ namespace System.IO.Filesystem.Ntfs
         /// Get all nodes under the specified rootPath in parallel.
         /// </summary>
         /// <param name="rootPath">The rootPath must at least contains the drive and may include any number of subdirectories. Wildcards aren't supported.</param>
+        /// <exception cref="AggregateException"></exception>
         public List<INode> GetNodesParallel(string rootPath)
         {
             var stopwatch = new Stopwatch();
@@ -150,7 +151,7 @@ namespace System.IO.Filesystem.Ntfs
 
             var nodes = new ConcurrentBag<INode>();
             var nodeCount = (uint)_nodes.Length;
-            Parallel.For(0,
+            _ = Parallel.For(0,
                 nodeCount,
                 index => {
                     var i = Convert.ToUInt32(index);
