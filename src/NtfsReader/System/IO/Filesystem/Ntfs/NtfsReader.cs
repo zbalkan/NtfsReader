@@ -238,7 +238,7 @@ namespace System.IO.Filesystem.Ntfs
             public ulong Size;                          // Total number of bytes.
             public AttributeType Type;
             public int NameIndex;
-            private List<Fragment> _fragments;
+            private List<Fragment>? _fragments;
 
             public Stream(int nameIndex, AttributeType type, ulong size)
             {
@@ -326,14 +326,14 @@ namespace System.IO.Filesystem.Ntfs
 
             #region IStream Members
 
-            public string Name => _reader.GetNameFromIndex(_reader._streams[_parentNode.NodeIndex][_streamIndex].NameIndex);
+            public string? Name => _reader.GetNameFromIndex(_reader._streams![_parentNode.NodeIndex][_streamIndex].NameIndex);
 
-            public ulong Size => _reader._streams[_parentNode.NodeIndex][_streamIndex].Size;
+            public ulong Size => _reader._streams![_parentNode.NodeIndex][_streamIndex].Size;
 
-            public IList<IFragment> Fragments {
+            public IList<IFragment>? Fragments {
                 get {
                     IList<Fragment> fragments =
-                        _reader._streams[_parentNode.NodeIndex][_streamIndex].Fragments;
+                        _reader._streams![_parentNode.NodeIndex][_streamIndex].Fragments;
 
                     if (fragments == null || fragments.Count == 0)
                     {
@@ -360,7 +360,7 @@ namespace System.IO.Filesystem.Ntfs
         {
             private readonly NtfsReader _reader;
             private Node _node;
-            private string _fullName;
+            private string? _fullName;
 
             public NodeWrapper(NtfsReader reader, uint nodeIndex, Node node)
             {
@@ -375,7 +375,7 @@ namespace System.IO.Filesystem.Ntfs
 
             public Attributes Attributes => _node.Attributes;
 
-            public string Name => _reader.GetNameFromIndex(_node.NameIndex);
+            public string? Name => _reader.GetNameFromIndex(_node.NameIndex);
 
             public ulong Size => _node.Size;
 
@@ -387,7 +387,7 @@ namespace System.IO.Filesystem.Ntfs
                 }
             }
 
-            public IList<IStream> Streams {
+            public IList<IStream>? Streams {
                 get {
                     if (_reader._streams == null)
                     {
@@ -501,27 +501,27 @@ namespace System.IO.Filesystem.Ntfs
 
         #endregion
 
-        private SafeFileHandle _volumeHandle;
+        private SafeFileHandle? _volumeHandle;
         private DiskInfoWrapper _diskInfo;
         private readonly Node[] _nodes;
-        private StandardInformation[] _standardInformations;
-        private Stream[][] _streams;
+        private StandardInformation[]? _standardInformations;
+        private Stream[][]? _streams;
         private readonly DriveInfo _driveInfo;
         private readonly List<string> _names = [];
         private readonly RetrieveMode _retrieveMode;
-        private byte[] _bitmapData;
+        private byte[]? _bitmapData;
 
         //preallocate a lot of space for the strings to avoid too much dictionary resizing
         //use ordinal comparison to improve performance
         //this will be deallocated once the MFT reading is finished
-        private readonly Dictionary<string, int> _nameIndex = new Dictionary<string, int>(128 * 1024, StringComparer.Ordinal);
+        private readonly Dictionary<string, int>? _nameIndex = new Dictionary<string, int>(128 * 1024, StringComparer.Ordinal);
 
         #region Events
 
         /// <summary>
         /// Raised once the bitmap data has been read.
         /// </summary>
-        public event EventHandler BitmapDataAvailable;
+        public event EventHandler? BitmapDataAvailable;
 
         private void OnBitmapDataAvailable() => BitmapDataAvailable?.Invoke(this, EventArgs.Empty);
 
@@ -537,7 +537,7 @@ namespace System.IO.Filesystem.Ntfs
         ///</remarks>
         private int GetNameIndex(string name)
         {
-            if (_nameIndex.TryGetValue(name, out var existingIndex))
+            if (_nameIndex!.TryGetValue(name, out var existingIndex))
             {
                 return existingIndex;
             }
@@ -551,9 +551,9 @@ namespace System.IO.Filesystem.Ntfs
         /// <summary>
         /// Get the string from our stringtable from the given index.
         /// </summary>
-        private string GetNameFromIndex(int nameIndex) => nameIndex == 0 ? null : _names[nameIndex];
+        private string? GetNameFromIndex(int nameIndex) => nameIndex == 0 ? null : _names[nameIndex];
 
-        private Stream SearchStream(List<Stream> streams, AttributeType streamType)
+        private Stream? SearchStream(List<Stream> streams, AttributeType streamType)
         {
             //since the number of stream is usually small, we can afford O(n)
             foreach (var stream in streams)
@@ -567,7 +567,7 @@ namespace System.IO.Filesystem.Ntfs
             return null;
         }
 
-        private Stream SearchStream(List<Stream> streams, AttributeType streamType, int streamNameIndex)
+        private Stream? SearchStream(List<Stream> streams, AttributeType streamType, int streamNameIndex)
         {
             //since the number of stream is usually small, we can afford O(n)
             foreach (var stream in streams)
@@ -594,7 +594,7 @@ namespace System.IO.Filesystem.Ntfs
         {
             var overlapped = new NativeOverlapped(absolutePosition);
 
-            if (!ReadFile(_volumeHandle, (IntPtr)buffer, (uint)len, out var read, ref overlapped))
+            if (!ReadFile(_volumeHandle!, (IntPtr)buffer, (uint)len, out var read, ref overlapped))
             {
                 throw new NtfsException("Unable to read volume information");
             }
@@ -684,7 +684,7 @@ namespace System.IO.Filesystem.Ntfs
         /// <summary>
         /// Gather basic disk information we need to interpret data
         /// </summary>
-        private unsafe void InitializeDiskInfo()
+        private unsafe DiskInfoWrapper InitializeDiskInfo()
         {
             var volumeData = new byte[512];
 
@@ -719,14 +719,14 @@ namespace System.IO.Filesystem.Ntfs
                     diskInfo.BytesPerMftRecord = diskInfo.ClustersPerMftRecord * diskInfo.BytesPerSector * diskInfo.SectorsPerCluster;
                 }
 
-                diskInfo.BytesPerCluster = (ulong)diskInfo.BytesPerSector * (ulong)diskInfo.SectorsPerCluster;
+                diskInfo.BytesPerCluster = diskInfo.BytesPerSector * (ulong)diskInfo.SectorsPerCluster;
 
                 if (diskInfo.SectorsPerCluster > 0)
                 {
                     diskInfo.TotalClusters = diskInfo.TotalSectors / diskInfo.SectorsPerCluster;
                 }
 
-                _diskInfo = diskInfo;
+                return diskInfo;
             }
         }
 
@@ -926,7 +926,7 @@ namespace System.IO.Filesystem.Ntfs
         /// <summary>
         /// Process each attributes and gather information when necessary
         /// </summary>
-        private unsafe void ProcessAttributes(ref Node node, uint nodeIndex, byte* ptr, ulong BufLength, ushort instance, int depth, List<Stream> streams, bool isMftNode)
+        private unsafe void ProcessAttributes(ref Node node, uint nodeIndex, byte* ptr, ulong BufLength, ushort instance, int depth, List<Stream>? streams, bool isMftNode)
         {
             Attribute* attribute = null;
             for (uint AttributeOffset = 0; AttributeOffset < BufLength; AttributeOffset += attribute->Length)
@@ -975,7 +975,6 @@ namespace System.IO.Filesystem.Ntfs
                                 throw new NotSupportedException("48 bits inode are not supported to reduce memory footprint.");
                             }
 
-                            //node.ParentNodeIndex = ((UInt64)attributeFileName->ParentDirectory.InodeNumberHighPart << 32) + attributeFileName->ParentDirectory.InodeNumberLowPart;
                             node.ParentNodeIndex = attributeFileName->ParentDirectory.InodeNumberLowPart;
 
                             if (attributeFileName->NameType == 1 || node.NameIndex == 0)
@@ -992,7 +991,7 @@ namespace System.IO.Filesystem.Ntfs
 
                             if ((_retrieveMode & RetrieveMode.StandardInformations) == RetrieveMode.StandardInformations)
                             {
-                                _standardInformations[nodeIndex] =
+                                _standardInformations![nodeIndex] =
                                     new StandardInformation(
                                         attributeStandardInformation->CreationTime,
                                         attributeStandardInformation->FileChangeTime,
@@ -1023,7 +1022,7 @@ namespace System.IO.Filesystem.Ntfs
                         var streamNameIndex = 0;
                         if (attribute->NameLength > 0)
                         {
-                            streamNameIndex = GetNameIndex(new string((char*)(ptr + AttributeOffset + attribute->NameOffset), 0, (int)attribute->NameLength));
+                            streamNameIndex = GetNameIndex(new string((char*)(ptr + AttributeOffset + attribute->NameOffset), 0, attribute->NameLength));
                         }
 
                         //find or create the stream
@@ -1125,7 +1124,7 @@ namespace System.IO.Filesystem.Ntfs
         /// <summary>
         /// Process an actual MFT record from the buffer
         /// </summary>
-        private unsafe bool ProcessMftRecord(byte* buffer, ulong length, uint nodeIndex, out Node node, List<Stream> streams, bool isMftNode)
+        private unsafe bool ProcessMftRecord(byte* buffer, ulong length, uint nodeIndex, out Node node, List<Stream>? streams, bool isMftNode)
         {
             node = new Node();
 
@@ -1256,8 +1255,7 @@ namespace System.IO.Filesystem.Ntfs
 
                 OnBitmapDataAvailable();
 
-                var dataStream = SearchStream(mftStreams, AttributeType.AttributeData);
-
+                var dataStream = SearchStream(mftStreams, AttributeType.AttributeData) ?? throw new NtfsException("MFT stream cannot be null");
                 var maxInode = (uint)_bitmapData.Length * 8;
                 if (maxInode > (uint)(dataStream.Size / _diskInfo.BytesPerMftRecord))
                 {
@@ -1269,7 +1267,7 @@ namespace System.IO.Filesystem.Ntfs
 
                 if ((_retrieveMode & RetrieveMode.StandardInformations) == RetrieveMode.StandardInformations)
                 {
-                    var mftRecordInformation = _standardInformations[0];
+                    var mftRecordInformation = _standardInformations![0];
                     _standardInformations = new StandardInformation[maxInode];
                     _standardInformations[0] = mftRecordInformation;
                 }
@@ -1323,7 +1321,7 @@ namespace System.IO.Filesystem.Ntfs
                             _diskInfo.BytesPerMftRecord
                         );
 
-                    List<Stream> streams = null;
+                    List<Stream>? streams = null;
                     if ((_retrieveMode & RetrieveMode.Streams) == RetrieveMode.Streams)
                     {
                         streams = [];
@@ -1344,7 +1342,7 @@ namespace System.IO.Filesystem.Ntfs
 
                     if (streams != null)
                     {
-                        _streams[nodeIndex] = streams.ToArray();
+                        _streams![nodeIndex] = streams.ToArray();
                     }
                 }
 

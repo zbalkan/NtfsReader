@@ -16,14 +16,14 @@
     You should have received a copy of the GNU Lesser General Public
     License along with this library; if not, write to the Free Software
     Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
-  
+
     For the full text of the license see the "License.txt" file.
 
     This library is based on the work of Jeroen Kessels, Author of JkDefrag.
     http://www.kessels.com/Jkdefrag/
-    
+
     Special thanks goes to him.
-  
+
     Danny Couture
     Software Architect
 */
@@ -36,8 +36,8 @@ namespace System.IO.Filesystem.Ntfs
     /// </summary>
     public interface IStream
     {
-        string Name { get; }
+        string? Name { get; }
         ulong Size { get; }
-        IList<IFragment> Fragments { get; }
+        IList<IFragment>? Fragments { get; }
     }
 }

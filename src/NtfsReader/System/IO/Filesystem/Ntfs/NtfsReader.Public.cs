@@ -49,7 +49,7 @@ namespace System.IO.Filesystem.Ntfs
     {
         public IDiskInfo DiskInfo => _diskInfo;
 
-        public byte[] VolumeBitmap => _bitmapData;
+        public byte[]? VolumeBitmap => _bitmapData;
 
         private static readonly char[] trimChars = ['\\'];
 
@@ -94,7 +94,7 @@ namespace System.IO.Filesystem.Ntfs
 
             using (_volumeHandle)
             {
-                InitializeDiskInfo();
+                _diskInfo = InitializeDiskInfo();
 
                 _nodes = ProcessMft();
             }
