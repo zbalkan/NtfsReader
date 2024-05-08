@@ -30,6 +30,9 @@
 using System.Collections.Generic;
 using System.Text;
 using System.Diagnostics;
+using System.Collections.Concurrent;
+using System.Threading.Tasks;
+using System.Linq;
 
 namespace System.IO.Filesystem.Ntfs
 {
@@ -44,6 +47,12 @@ namespace System.IO.Filesystem.Ntfs
     /// <remarks>Admnistrator rights are required in order to use this method.</remarks>
     public partial class NtfsReader
     {
+        public IDiskInfo DiskInfo => _diskInfo;
+
+        public byte[] VolumeBitmap => _bitmapData;
+
+        private static readonly char[] trimChars = ['\\'];
+
         /// <summary>
         /// NtfsReader constructor.
         /// </summary>
@@ -96,11 +105,6 @@ namespace System.IO.Filesystem.Ntfs
 
             GC.Collect();
         }
-
-        public IDiskInfo DiskInfo => _diskInfo;
-
-        private static readonly char[] trimChars = ['\\'];
-
         /// <summary>
         /// Get all nodes under the specified rootPath.
         /// </summary>
@@ -112,7 +116,6 @@ namespace System.IO.Filesystem.Ntfs
 
             var nodes = new List<INode>();
 
-            //TODO use Parallel.Net to process this when it becomes available
             var nodeCount = (uint)_nodes.Length;
             for (uint i = 0; i < nodeCount; ++i)
             {
@@ -136,8 +139,36 @@ namespace System.IO.Filesystem.Ntfs
             return nodes;
         }
 
-        public byte[] VolumeBitmap => _bitmapData;
+        /// <summary>
+        /// Get all nodes under the specified rootPath in parallel.
+        /// </summary>
+        /// <param name="rootPath">The rootPath must at least contains the drive and may include any number of subdirectories. Wildcards aren't supported.</param>
+        public List<INode> GetNodesParallel(string rootPath)
+        {
+            var stopwatch = new Stopwatch();
+            stopwatch.Start();
 
+            var nodes = new ConcurrentBag<INode>();
+            var nodeCount = (uint)_nodes.Length;
+            Parallel.For(0,
+                nodeCount,
+                index => {
+                    var i = Convert.ToUInt32(index);
+                    if (_nodes[i].NameIndex != 0 && GetNodeFullNameCore(i)
+                            .StartsWith(rootPath, StringComparison.InvariantCultureIgnoreCase))
+                    {
+                        nodes.Add(new NodeWrapper(this, i, _nodes[i]));
+                    }
+                });
+
+            stopwatch.Stop();
+
+            Trace.WriteLine(
+                $"{nodes.Count} node{(nodes.Count > 1 ? "s" : string.Empty)} have been retrieved in {(float)stopwatch.ElapsedTicks / TimeSpan.TicksPerMillisecond} ms"
+            );
+
+            return nodes.ToList();
+        }
         #region IDisposable Members
 
         public void Dispose()

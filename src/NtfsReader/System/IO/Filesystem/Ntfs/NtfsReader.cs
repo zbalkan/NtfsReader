@@ -238,7 +238,7 @@ namespace System.IO.Filesystem.Ntfs
             public ulong Size;                          // Total number of bytes.
             public AttributeType Type;
             public int NameIndex;
-            public List<Fragment> _fragments;
+            private List<Fragment> _fragments;
 
             public Stream(int nameIndex, AttributeType type, ulong size)
             {
@@ -247,13 +247,7 @@ namespace System.IO.Filesystem.Ntfs
                 Size = size;
             }
 
-            public List<Fragment> Fragments {
-                get {
-                    _fragments ??= new List<Fragment>(5);
-
-                    return _fragments;
-                }
-            }
+            public List<Fragment> Fragments => _fragments ??= new List<Fragment>(5);
         }
 
         /// <summary>
