@@ -17,14 +17,14 @@
     You should have received a copy of the GNU Lesser General Public
     License along with this library; if not, write to the Free Software
     Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
-  
+
     For the full text of the license see the "License.txt" file.
 
     This library is based on the work of Jeroen Kessels, Author of JkDefrag.
     http://www.kessels.com/Jkdefrag/
-    
+
     Special thanks goes to him.
-  
+
     Danny Couture
     Software Architect
 */
@@ -36,7 +36,7 @@ namespace System.IO.Filesystem.Ntfs
     public partial class NtfsReader
     {
         [DllImport("kernel32", CharSet = CharSet.Auto, BestFitMapping = false)]
-        private static extern bool GetVolumeNameForVolumeMountPoint(String volumeName, StringBuilder uniqueVolumeName, int uniqueNameBufferCapacity);
+        private static extern bool GetVolumeNameForVolumeMountPoint(string volumeName, StringBuilder uniqueVolumeName, int uniqueNameBufferCapacity);
 
         [DllImport("kernel32", CharSet = CharSet.Auto, BestFitMapping = false)]
         private static extern SafeFileHandle CreateFile(string lpFileName, FileAccess fileAccess, FileShare fileShare, IntPtr lpSecurityAttributes, FileMode fileMode, int dwFlagsAndAttributes, IntPtr hTemplateFile);
@@ -69,7 +69,7 @@ namespace System.IO.Filesystem.Ntfs
         private enum FileAccess : int
         {
             Read = 1,
-            ReadWrite = 3,
+            ReadWrite = Read | Write,
             Write = 2
         }
 
@@ -78,10 +78,10 @@ namespace System.IO.Filesystem.Ntfs
         {
             public IntPtr privateLow;
             public IntPtr privateHigh;
-            public UInt64 Offset;
+            public ulong Offset;
             public IntPtr EventHandle;
 
-            public NativeOverlapped(UInt64 offset)
+            public NativeOverlapped(ulong offset)
             {
                 Offset = offset;
                 EventHandle = IntPtr.Zero;

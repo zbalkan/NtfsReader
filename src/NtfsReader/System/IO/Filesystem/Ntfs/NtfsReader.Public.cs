@@ -16,14 +16,14 @@
     You should have received a copy of the GNU Lesser General Public
     License along with this library; if not, write to the Free Software
     Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
-  
+
     For the full text of the license see the "License.txt" file.
 
     This library is based on the work of Jeroen Kessels, Author of JkDefrag.
     http://www.kessels.com/Jkdefrag/
-    
+
     Special thanks goes to him.
-  
+
     Danny Couture
     Software Architect
 */
@@ -34,11 +34,12 @@ using System.Diagnostics;
 namespace System.IO.Filesystem.Ntfs
 {
     /// <summary>
-    /// Ntfs metadata reader.
-    /// 
+    /// <para>Ntfs metadata reader.</para>
+    /// <para>
     /// This class is used to get files & directories information of an NTFS volume.
     /// This is a lot faster than using conventional directory browsing method
     /// particularly when browsing really big directories.
+    /// </para>
     /// </summary>
     /// <remarks>Admnistrator rights are required in order to use this method.</remarks>
     public partial class NtfsReader
@@ -47,20 +48,19 @@ namespace System.IO.Filesystem.Ntfs
         /// NtfsReader constructor.
         /// </summary>
         /// <param name="driveInfo">The drive you want to read metadata from.</param>
-        /// <param name="include">Information to retrieve from each node while scanning the disk</param>
+        /// <param name="retrieveMode">Information to retrieve from each node while scanning the disk</param>
         /// <remarks>Streams & Fragments are expensive to store in memory, if you don't need them, don't retrieve them.</remarks>
         public NtfsReader(DriveInfo driveInfo, RetrieveMode retrieveMode)
         {
-            if (driveInfo == null)
-                throw new ArgumentNullException("driveInfo");
+            ArgumentNullException.ThrowIfNull(driveInfo);
 
             _driveInfo = driveInfo;
             _retrieveMode = retrieveMode;
 
-            StringBuilder builder = new StringBuilder(1024);
+            var builder = new StringBuilder(1024);
             GetVolumeNameForVolumeMountPoint(_driveInfo.RootDirectory.Name, builder, builder.Capacity);
 
-            string volume = builder.ToString().TrimEnd(new char[] { '\\' });
+            var volume = builder.ToString().TrimEnd(trimChars);
 
             _volumeHandle =
                 CreateFile(
@@ -73,13 +73,15 @@ namespace System.IO.Filesystem.Ntfs
                     IntPtr.Zero
                     );
 
-            if (_volumeHandle == null || _volumeHandle.IsInvalid)
+            if (_volumeHandle?.IsInvalid != false)
+            {
                 throw new IOException(
                     string.Format(
                         "Unable to open volume {0}. Make sure it exists and that you have Administrator privileges.",
                         driveInfo
                     )
                 );
+            }
 
             using (_volumeHandle)
             {
@@ -95,10 +97,9 @@ namespace System.IO.Filesystem.Ntfs
             GC.Collect();
         }
 
-        public IDiskInfo DiskInfo
-        {
-            get { return _diskInfo; }
-        }
+        public IDiskInfo DiskInfo => _diskInfo;
+
+        private static readonly char[] trimChars = ['\\'];
 
         /// <summary>
         /// Get all nodes under the specified rootPath.
@@ -106,16 +107,20 @@ namespace System.IO.Filesystem.Ntfs
         /// <param name="rootPath">The rootPath must at least contains the drive and may include any number of subdirectories. Wildcards aren't supported.</param>
         public List<INode> GetNodes(string rootPath)
         {
-            Stopwatch stopwatch = new Stopwatch();
+            var stopwatch = new Stopwatch();
             stopwatch.Start();
 
-            List<INode> nodes = new List<INode>();
+            var nodes = new List<INode>();
 
             //TODO use Parallel.Net to process this when it becomes available
-            UInt32 nodeCount = (UInt32)_nodes.Length;
-            for (UInt32 i = 0; i < nodeCount; ++i)
+            var nodeCount = (uint)_nodes.Length;
+            for (uint i = 0; i < nodeCount; ++i)
+            {
                 if (_nodes[i].NameIndex != 0 && GetNodeFullNameCore(i).StartsWith(rootPath, StringComparison.InvariantCultureIgnoreCase))
+                {
                     nodes.Add(new NodeWrapper(this, i, _nodes[i]));
+                }
+            }
 
             stopwatch.Stop();
 
@@ -131,10 +136,7 @@ namespace System.IO.Filesystem.Ntfs
             return nodes;
         }
 
-        public byte[] GetVolumeBitmap()
-        {
-            return _bitmapData;
-        }
+        public byte[] VolumeBitmap => _bitmapData;
 
         #region IDisposable Members
 

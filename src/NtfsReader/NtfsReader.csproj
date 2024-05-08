@@ -1,6 +1,6 @@
-<Project Sdk="Microsoft.NET.Sdk">
+﻿<Project Sdk="Microsoft.NET.Sdk">
 	<PropertyGroup>
-		<TargetFramework>netstandard2.0</TargetFramework>
+		<TargetFramework>net8.0-windows10.0.17763.0</TargetFramework>
 		<AllowUnsafeBlocks>true</AllowUnsafeBlocks>
 		<PackageId>Michaelkc.NtfsReader</PackageId>
 		<Version>0.0.3</Version>
@@ -9,6 +9,6 @@
 		<RepositoryUrl>https://github.com/michaelkc/NtfsReader</RepositoryUrl>
 		<IncludeSymbols>true</IncludeSymbols>
 		<SymbolPackageFormat>snupkg</SymbolPackageFormat>
-	    <PackageLicenseExpression>LGPL-2.1-or-later</PackageLicenseExpression>
+		<PackageLicenseExpression>LGPL-2.1-or-later</PackageLicenseExpression>
 	</PropertyGroup>
 </Project>

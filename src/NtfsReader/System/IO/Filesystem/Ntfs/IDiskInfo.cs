@@ -34,15 +34,15 @@ namespace System.IO.Filesystem.Ntfs
     /// </summary>
     public interface IDiskInfo
     {
-        UInt16 BytesPerSector { get; }
-        byte   SectorsPerCluster { get; }
-        UInt64 TotalSectors { get; }
-        UInt64 MftStartLcn { get; }
-        UInt64 Mft2StartLcn { get; }
-        UInt32 ClustersPerMftRecord { get; }
-        UInt32 ClustersPerIndexRecord { get; }
-        UInt64 BytesPerMftRecord { get; }
-        UInt64 BytesPerCluster { get; }
-        UInt64 TotalClusters { get; }
+        ushort BytesPerSector { get; }
+        byte SectorsPerCluster { get; }
+        ulong TotalSectors { get; }
+        ulong MftStartLcn { get; }
+        ulong Mft2StartLcn { get; }
+        uint ClustersPerMftRecord { get; }
+        uint ClustersPerIndexRecord { get; }
+        ulong BytesPerMftRecord { get; }
+        ulong BytesPerCluster { get; }
+        ulong TotalClusters { get; }
     }
 }

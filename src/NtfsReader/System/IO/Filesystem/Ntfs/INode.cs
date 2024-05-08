@@ -37,10 +37,10 @@ namespace System.IO.Filesystem.Ntfs
     public interface INode
     {
         Attributes Attributes { get; }
-        UInt32 NodeIndex { get; }
-        UInt32 ParentNodeIndex { get; }
+        uint NodeIndex { get; }
+        uint ParentNodeIndex { get; }
         string Name { get; }
-        UInt64 Size { get; }
+        ulong Size { get; }
         string FullName { get; }
         IList<IStream> Streams { get; }
 

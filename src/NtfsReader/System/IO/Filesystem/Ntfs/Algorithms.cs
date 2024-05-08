@@ -16,50 +16,53 @@
     You should have received a copy of the GNU Lesser General Public
     License along with this library; if not, write to the Free Software
     Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
-  
+
     For the full text of the license see the "License.txt" file.
 
     This library is based on the work of Jeroen Kessels, Author of JkDefrag.
     http://www.kessels.com/Jkdefrag/
-    
+
     Special thanks goes to him.
-  
+
     Danny Couture
     Software Architect
 */
-using System;
 using System.Collections.Generic;
-using System.Text;
 
 namespace System.IO.Filesystem.Ntfs
 {
     public static class Algorithms
     {
-        public static IDictionary<UInt32, List<INode>> AggregateByFragments(IEnumerable<INode> nodes, UInt32 minimumFragments)
+        public static IDictionary<uint, List<INode>> AggregateByFragments(IEnumerable<INode> nodes, uint minimumFragments)
         {
-            Dictionary<UInt32, List<INode>> fragmentsAggregate = new Dictionary<UInt32, List<INode>>();
+            var fragmentsAggregate = new Dictionary<uint, List<INode>>();
 
-            foreach (INode node in nodes)
+            foreach (var node in nodes)
             {
-                IList<IStream> streams = node.Streams;
+                var streams = node.Streams;
                 if (streams == null || streams.Count == 0)
+                {
                     continue;
+                }
 
-                IList<IFragment> fragments = streams[0].Fragments;
+                var fragments = streams[0].Fragments;
                 if (fragments == null)
+                {
                     continue;
+                }
 
-                UInt32 fragmentCount = (UInt32)fragments.Count;
+                var fragmentCount = (uint)fragments.Count;
 
                 if (fragmentCount < minimumFragments)
+                {
                     continue;
+                }
 
-                List<INode> nodeList;
-                fragmentsAggregate.TryGetValue(fragmentCount, out nodeList);
+                fragmentsAggregate.TryGetValue(fragmentCount, out var nodeList);
 
                 if (nodeList == null)
                 {
-                    nodeList = new List<INode>();
+                    nodeList = [];
                     fragmentsAggregate[fragmentCount] = nodeList;
                 }
 
@@ -69,21 +72,22 @@ namespace System.IO.Filesystem.Ntfs
             return fragmentsAggregate;
         }
 
-        public static IDictionary<UInt64, List<INode>> AggregateBySize(IEnumerable<INode> nodes, UInt64 minimumSize)
+        public static IDictionary<ulong, List<INode>> AggregateBySize(IEnumerable<INode> nodes, ulong minimumSize)
         {
-            Dictionary<UInt64, List<INode>> sizeAggregate = new Dictionary<ulong, List<INode>>();
+            var sizeAggregate = new Dictionary<ulong, List<INode>>();
 
-            foreach (INode node in nodes)
+            foreach (var node in nodes)
             {
                 if ((node.Attributes & Attributes.Directory) != 0 || node.Size < minimumSize)
+                {
                     continue;
+                }
 
-                List<INode> nodeList;
-                sizeAggregate.TryGetValue(node.Size, out nodeList);
+                sizeAggregate.TryGetValue(node.Size, out var nodeList);
 
                 if (nodeList == null)
                 {
-                    nodeList = new List<INode>();
+                    nodeList = [];
                     sizeAggregate[node.Size] = nodeList;
                 }
 

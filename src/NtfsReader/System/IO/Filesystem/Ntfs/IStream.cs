@@ -37,7 +37,7 @@ namespace System.IO.Filesystem.Ntfs
     public interface IStream
     {
         string Name { get; }
-        UInt64 Size { get; }
+        ulong Size { get; }
         IList<IFragment> Fragments { get; }
     }
 }

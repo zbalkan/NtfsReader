@@ -16,14 +16,14 @@
     You should have received a copy of the GNU Lesser General Public
     License along with this library; if not, write to the Free Software
     Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
-  
+
     For the full text of the license see the "License.txt" file.
 
     This library is based on the work of Jeroen Kessels, Author of JkDefrag.
     http://www.kessels.com/Jkdefrag/
-    
+
     Special thanks goes to him.
-  
+
     Danny Couture
     Software Architect
 */
@@ -35,13 +35,13 @@ namespace System.IO.Filesystem.Ntfs
     public interface IFragment
     {
         /// <summary>
-        /// Logical cluster number, location on disk. 
+        /// Logical cluster number, location on disk.
         /// </summary>
-        UInt64 Lcn { get; }
+        ulong Lcn { get; }
 
         /// <summary>
         /// Virtual cluster number of next fragment.
         /// </summary>
-        UInt64 NextVcn { get; }
+        ulong NextVcn { get; }
     }
 }
