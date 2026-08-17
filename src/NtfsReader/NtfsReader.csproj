@@ -11,5 +11,6 @@
 		<SymbolPackageFormat>snupkg</SymbolPackageFormat>
 		<PackageLicenseExpression>LGPL-2.1-or-later</PackageLicenseExpression>
 		<Nullable>enable</Nullable>
+		<IsAotCompatible>true</IsAotCompatible>
 	</PropertyGroup>
 </Project>
