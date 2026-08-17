@@ -54,9 +54,9 @@ namespace System.IO.Filesystem.Ntfs
         /// NtfsReader constructor.
         /// </summary>
         /// <param name="driveInfo">The drive you want to read metadata from.</param>
-        /// <param name="retrieveMode">Information to retrieve from each node while scanning the disk</param>
+        /// <param name="retrieveMode">Information to retrieve from each node while scanning the disk. StandardInformation is the default</param>
         /// <remarks>Streams & Fragments are expensive to store in memory, if you don't need them, don't retrieve them.</remarks>
-        public NtfsReader(DriveInfo driveInfo, RetrieveMode retrieveMode)
+        public NtfsReader(DriveInfo driveInfo, RetrieveMode retrieveMode = RetrieveMode.StandardInformations)
         {
             ArgumentNullException.ThrowIfNull(driveInfo);
 
