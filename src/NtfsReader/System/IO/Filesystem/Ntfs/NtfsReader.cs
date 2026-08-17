@@ -495,10 +495,10 @@ namespace System.IO.Filesystem.Ntfs
 
         private readonly DriveInfo _driveInfo;
 
-        //preallocate a lot of space for the strings to avoid too much dictionary resizing
-        //use ordinal comparison to improve performance
-        //this will be deallocated once the MFT reading is finished
-        private readonly Dictionary<string, int>? _nameIndex = new Dictionary<string, int>(128 * 1024, StringComparer.Ordinal);
+        // This index only lives while the MFT is being read. Do not eagerly reserve a
+        // large table: that made even small-volume scans allocate arrays for 131,072
+        // entries. The dictionary grows with the actual number of distinct names.
+        private readonly Dictionary<string, int>? _nameIndex = new(StringComparer.Ordinal);
 
         private readonly List<string> _names = [];
         private readonly Node[] _nodes;
@@ -533,15 +533,21 @@ namespace System.IO.Filesystem.Ntfs
         ///<remarks>
         /// In order to mimize memory usage, we reuse string as much as possible.
         ///</remarks>
-        private int GetNameIndex(string name)
+        private int GetNameIndex(ReadOnlySpan<char> name)
         {
-            if (_nameIndex!.TryGetValue(name, out var existingIndex))
+            // NTFS names already reside in the current MFT record buffer. Use the
+            // dictionary's span-based alternate lookup so repeated names can be
+            // found without first allocating a temporary string that immediately
+            // becomes garbage.
+            var lookup = _nameIndex!.GetAlternateLookup<ReadOnlySpan<char>>();
+            if (lookup.TryGetValue(name, out var existingIndex))
             {
                 return existingIndex;
             }
 
-            _names.Add(name);
-            _nameIndex[name] = _names.Count - 1;
+            var retainedName = new string(name);
+            _names.Add(retainedName);
+            _nameIndex[retainedName] = _names.Count - 1;
 
             return _names.Count - 1;
         }
@@ -794,7 +800,7 @@ namespace System.IO.Filesystem.Ntfs
 
                             if (attributeFileName->NameType == 1 || node.NameIndex == 0)
                             {
-                                node.NameIndex = GetNameIndex(new string(&attributeFileName->Name, 0, attributeFileName->NameLength));
+                                node.NameIndex = GetNameIndex(new ReadOnlySpan<char>(&attributeFileName->Name, attributeFileName->NameLength));
                             }
 
                             break;
@@ -837,7 +843,7 @@ namespace System.IO.Filesystem.Ntfs
                         var streamNameIndex = 0;
                         if (attribute->NameLength > 0)
                         {
-                            streamNameIndex = GetNameIndex(new string((char*)(ptr + AttributeOffset + attribute->NameOffset), 0, attribute->NameLength));
+                            streamNameIndex = GetNameIndex(new ReadOnlySpan<char>((char*)(ptr + AttributeOffset + attribute->NameOffset), attribute->NameLength));
                         }
 
                         //find or create the stream
