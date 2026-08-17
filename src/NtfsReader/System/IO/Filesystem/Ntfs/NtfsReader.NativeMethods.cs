@@ -1,4 +1,5 @@
 ﻿using System.Runtime.InteropServices;
+
 /*
     The NtfsReader library.
 
@@ -28,6 +29,7 @@
     Danny Couture
     Software Architect
 */
+
 using System.Text;
 using Microsoft.Win32.SafeHandles;
 
@@ -35,24 +37,25 @@ namespace System.IO.Filesystem.Ntfs
 {
     public partial class NtfsReader
     {
-        [DllImport("kernel32", CharSet = CharSet.Auto, BestFitMapping = false)]
-        private static extern bool GetVolumeNameForVolumeMountPoint(string volumeName, StringBuilder uniqueVolumeName, int uniqueNameBufferCapacity);
-
-        [DllImport("kernel32", CharSet = CharSet.Auto, BestFitMapping = false)]
-        private static extern SafeFileHandle CreateFile(string lpFileName, FileAccess fileAccess, FileShare fileShare, IntPtr lpSecurityAttributes, FileMode fileMode, int dwFlagsAndAttributes, IntPtr hTemplateFile);
-
-        [DllImport("kernel32", CharSet = CharSet.Auto)]
-        private static extern bool ReadFile(SafeFileHandle hFile, IntPtr lpBuffer, uint nNumberOfBytesToRead, out uint lpNumberOfBytesRead, ref NativeOverlapped lpOverlapped);
+        [Serializable, Flags]
+#pragma warning disable RCS1135 // Declare enum member with zero value (when enum has FlagsAttribute)
+        private enum FileAccess : int
+#pragma warning restore RCS1135 // Declare enum member with zero value (when enum has FlagsAttribute)
+        {
+            Read = 1,
+            ReadWrite = Read | Write,
+            Write = 1 << 1
+        }
 
         [Serializable]
         private enum FileMode : int
         {
-            Append = 6,
-            Create = 2,
             CreateNew = 1,
+            Create = 2,
             Open = 3,
             OpenOrCreate = 4,
-            Truncate = 5
+            Truncate = 5,
+            Append = 6
         }
 
         [Serializable, Flags]
@@ -60,18 +63,20 @@ namespace System.IO.Filesystem.Ntfs
         {
             None = 0,
             Read = 1,
-            Write = 2,
-            Delete = 4,
+            Write = 1 << 1,
+            Delete = 1 << 2,
             All = Read | Write | Delete
         }
 
-        [Serializable, Flags]
-        private enum FileAccess : int
-        {
-            Read = 1,
-            ReadWrite = Read | Write,
-            Write = 2
-        }
+        [LibraryImport("kernel32", StringMarshalling = StringMarshalling.Utf16)]
+        private static partial SafeFileHandle CreateFile(string lpFileName, FileAccess fileAccess, FileShare fileShare, IntPtr lpSecurityAttributes, FileMode fileMode, int dwFlagsAndAttributes, IntPtr hTemplateFile);
+
+        [DllImport("kernel32", CharSet = CharSet.Auto, BestFitMapping = false)]
+        private static extern bool GetVolumeNameForVolumeMountPoint(string volumeName, StringBuilder uniqueVolumeName, int uniqueNameBufferCapacity);
+
+        [LibraryImport("kernel32")]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static partial bool ReadFile(SafeFileHandle hFile, IntPtr lpBuffer, uint nNumberOfBytesToRead, out uint lpNumberOfBytesRead, ref NativeOverlapped lpOverlapped);
 
         [StructLayout(LayoutKind.Sequential)]
         private struct NativeOverlapped

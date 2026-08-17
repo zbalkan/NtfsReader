@@ -27,89 +27,17 @@
     Danny Couture
     Software Architect
 */
+
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Runtime.InteropServices;
 using Microsoft.Win32.SafeHandles;
-using System.Diagnostics;
 
 namespace System.IO.Filesystem.Ntfs
 {
     public sealed partial class NtfsReader : IDisposable
     {
         #region Ntfs Structures
-
-        [StructLayout(LayoutKind.Sequential, Pack = 1)]
-        private unsafe struct BootSector
-        {
-            public fixed byte AlignmentOrReserved1[3];
-            public ulong Signature;
-            public ushort BytesPerSector;
-            public byte SectorsPerCluster;
-            public fixed byte AlignmentOrReserved2[26];
-            public ulong TotalSectors;
-            public ulong MftStartLcn;
-            public ulong Mft2StartLcn;
-            public uint ClustersPerMftRecord;
-            public uint ClustersPerIndexRecord;
-        }
-
-        [StructLayout(LayoutKind.Sequential, Pack = 1)]
-        private struct VolumeData
-        {
-            public ulong VolumeSerialNumber;
-            public ulong NumberSectors;
-            public ulong TotalClusters;
-            public ulong FreeClusters;
-            public ulong TotalReserved;
-            public uint BytesPerSector;
-            public uint BytesPerCluster;
-            public uint BytesPerFileRecordSegment;
-            public uint ClustersPerFileRecordSegment;
-            public ulong MftValidDataLength;
-            public ulong MftStartLcn;
-            public ulong Mft2StartLcn;
-            public ulong MftZoneStart;
-            public ulong MftZoneEnd;
-        }
-
-        private enum RecordType : uint
-        {
-            File = 0x454c4946,  //'FILE' in ASCII
-        }
-
-        [StructLayout(LayoutKind.Sequential, Pack = 1)]
-        private struct RecordHeader
-        {
-            public RecordType Type;                  /* File type, for example 'FILE' */
-            public ushort UsaOffset;             /* Offset to the Update Sequence Array */
-            public ushort UsaCount;              /* Size in words of Update Sequence Array */
-            public ulong Lsn;                   /* $LogFile Sequence Number (LSN) */
-        }
-
-        [StructLayout(LayoutKind.Sequential, Pack = 1)]
-        private struct INodeReference
-        {
-            public uint InodeNumberLowPart;
-            public ushort InodeNumberHighPart;
-            public ushort SequenceNumber;
-        };
-
-        [StructLayout(LayoutKind.Sequential, Pack = 1)]
-        private struct FileRecordHeader
-        {
-            public RecordHeader RecordHeader;
-            public ushort SequenceNumber;        /* Sequence number */
-            public ushort LinkCount;             /* Hard link count */
-            public ushort AttributeOffset;       /* Offset to the first Attribute */
-            public ushort Flags;                 /* Flags. bit 1 = in use, bit 2 = directory, bit 4 & 8 = unknown. */
-            public uint BytesInUse;             /* Real size of the FILE record */
-            public uint BytesAllocated;         /* Allocated size of the FILE record */
-            public INodeReference BaseFileRecord;     /* File reference to the base FILE record */
-            public ushort NextAttributeNumber;   /* Next Attribute Id */
-            public ushort Padding;               /* Align to 4 UCHAR boundary (XP) */
-            public uint MFTRecordNumber;        /* Number of this MFT Record (XP) */
-            public ushort UpdateSeqNum;          /*  */
-        };
 
         private enum AttributeType : uint
         {
@@ -132,6 +60,11 @@ namespace System.IO.Filesystem.Ntfs
             AttributeLoggedUtilityStream = 0x100
         };
 
+        private enum RecordType : uint
+        {
+            File = 0x454c4946,  //'FILE' in ASCII
+        }
+
         [StructLayout(LayoutKind.Sequential, Pack = 1)]
         private struct Attribute
         {
@@ -143,19 +76,6 @@ namespace System.IO.Filesystem.Ntfs
             public ushort Flags;              /* 0x0001 = Compressed, 0x4000 = Encrypted, 0x8000 = Sparse */
             public ushort AttributeNumber;
         }
-
-        [StructLayout(LayoutKind.Sequential, Pack = 1)]
-        private unsafe struct AttributeList
-        {
-            public AttributeType AttributeType;
-            public ushort Length;
-            public byte NameLength;
-            public byte NameOffset;
-            public ulong LowestVcn;
-            public INodeReference FileReferenceNumber;
-            public ushort Instance;
-            public fixed ushort AlignmentOrReserved[3];
-        };
 
         [StructLayout(LayoutKind.Sequential, Pack = 1)]
         private struct AttributeFileName
@@ -172,6 +92,19 @@ namespace System.IO.Filesystem.Ntfs
             public byte NameLength;
             public byte NameType;                 /* NTFS=0x01, DOS=0x02 */
             public char Name;
+        };
+
+        [StructLayout(LayoutKind.Sequential, Pack = 1)]
+        private unsafe struct AttributeList
+        {
+            public AttributeType AttributeType;
+            public ushort Length;
+            public byte NameLength;
+            public byte NameOffset;
+            public ulong LowestVcn;
+            public INodeReference FileReferenceNumber;
+            public ushort Instance;
+            public fixed ushort AlignmentOrReserved[3];
         };
 
         [StructLayout(LayoutKind.Sequential, Pack = 1)]
@@ -192,12 +125,56 @@ namespace System.IO.Filesystem.Ntfs
         };
 
         [StructLayout(LayoutKind.Sequential, Pack = 1)]
-        private struct ResidentAttribute
+        private unsafe struct BootSector
         {
-            public Attribute Attribute;
-            public uint ValueLength;
-            public ushort ValueOffset;
-            public ushort Flags;               // 0x0001 = Indexed
+            public fixed byte AlignmentOrReserved1[3];
+            public ulong Signature;
+            public ushort BytesPerSector;
+            public byte SectorsPerCluster;
+            public fixed byte AlignmentOrReserved2[26];
+            public ulong TotalSectors;
+            public ulong MftStartLcn;
+            public ulong Mft2StartLcn;
+            public uint ClustersPerMftRecord;
+            public uint ClustersPerIndexRecord;
+        }
+
+        [StructLayout(LayoutKind.Sequential, Pack = 1)]
+        private struct FileRecordHeader
+        {
+            public RecordHeader RecordHeader;
+            public ushort SequenceNumber;        /* Sequence number */
+            public ushort LinkCount;             /* Hard link count */
+            public ushort AttributeOffset;       /* Offset to the first Attribute */
+            public ushort Flags;                 /* Flags. bit 1 = in use, bit 2 = directory, bit 4 & 8 = unknown. */
+            public uint BytesInUse;             /* Real size of the FILE record */
+            public uint BytesAllocated;         /* Allocated size of the FILE record */
+            public INodeReference BaseFileRecord;     /* File reference to the base FILE record */
+            public ushort NextAttributeNumber;   /* Next Attribute Id */
+            public ushort Padding;               /* Align to 4 UCHAR boundary (XP) */
+            public uint MFTRecordNumber;        /* Number of this MFT Record (XP) */
+            public ushort UpdateSeqNum;          /*  */
+        };
+
+        [StructLayout(LayoutKind.Sequential, Pack = 1)]
+        private struct Fragment
+        {
+            public ulong Lcn;                // Logical cluster number, location on disk.
+            public ulong NextVcn;            // Virtual cluster number of next fragment.
+
+            public Fragment(ulong lcn, ulong nextVcn)
+            {
+                Lcn = lcn;
+                NextVcn = nextVcn;
+            }
+        }
+
+        [StructLayout(LayoutKind.Sequential, Pack = 1)]
+        private struct INodeReference
+        {
+            public uint InodeNumberLowPart;
+            public ushort InodeNumberHighPart;
+            public ushort SequenceNumber;
         };
 
         [StructLayout(LayoutKind.Sequential, Pack = 1)]
@@ -216,39 +193,45 @@ namespace System.IO.Filesystem.Ntfs
         };
 
         [StructLayout(LayoutKind.Sequential, Pack = 1)]
-        private struct Fragment
+        private struct RecordHeader
         {
-            public ulong Lcn;                // Logical cluster number, location on disk.
-            public ulong NextVcn;            // Virtual cluster number of next fragment.
-
-            public Fragment(ulong lcn, ulong nextVcn)
-            {
-                Lcn = lcn;
-                NextVcn = nextVcn;
-            }
+            public RecordType Type;                  /* File type, for example 'FILE' */
+            public ushort UsaOffset;             /* Offset to the Update Sequence Array */
+            public ushort UsaCount;              /* Size in words of Update Sequence Array */
+            public ulong Lsn;                   /* $LogFile Sequence Number (LSN) */
         }
 
-        #endregion
+        [StructLayout(LayoutKind.Sequential, Pack = 1)]
+        private struct ResidentAttribute
+        {
+            public Attribute Attribute;
+            public uint ValueLength;
+            public ushort ValueOffset;
+            public ushort Flags;               // 0x0001 = Indexed
+        };
+
+        [StructLayout(LayoutKind.Sequential, Pack = 1)]
+        private struct VolumeData
+        {
+            public ulong VolumeSerialNumber;
+            public ulong NumberSectors;
+            public ulong TotalClusters;
+            public ulong FreeClusters;
+            public ulong TotalReserved;
+            public uint BytesPerSector;
+            public uint BytesPerCluster;
+            public uint BytesPerFileRecordSegment;
+            public uint ClustersPerFileRecordSegment;
+            public ulong MftValidDataLength;
+            public ulong MftStartLcn;
+            public ulong Mft2StartLcn;
+            public ulong MftZoneStart;
+            public ulong MftZoneEnd;
+        }
+
+        #endregion Ntfs Structures
 
         #region Private Classes
-
-        private sealed class Stream
-        {
-            public ulong Clusters;                      // Total number of clusters.
-            public ulong Size;                          // Total number of bytes.
-            public AttributeType Type;
-            public int NameIndex;
-            private List<Fragment>? _fragments;
-
-            public Stream(int nameIndex, AttributeType type, ulong size)
-            {
-                NameIndex = nameIndex;
-                Type = type;
-                Size = size;
-            }
-
-            public List<Fragment> Fragments => _fragments ??= new List<Fragment>(5);
-        }
 
         /// <summary>
         /// Node struct for file and directory entries
@@ -259,9 +242,9 @@ namespace System.IO.Filesystem.Ntfs
         private struct Node
         {
             public Attributes Attributes;
+            public int NameIndex;
             public uint ParentNodeIndex;
             public ulong Size;
-            public int NameIndex;
         }
 
         /// <summary>
@@ -286,6 +269,40 @@ namespace System.IO.Filesystem.Ntfs
         }
 
         /// <summary>
+        /// Simple structure of available disk informations.
+        /// </summary>
+        private sealed class DiskInfoWrapper : IDiskInfo
+        {
+            public ulong BytesPerCluster;
+            public ulong BytesPerMftRecord;
+            public ushort BytesPerSector;
+            public uint ClustersPerIndexRecord;
+            public uint ClustersPerMftRecord;
+            public ulong Mft2StartLcn;
+            public ulong MftStartLcn;
+            public byte SectorsPerCluster;
+            public ulong TotalClusters;
+            public ulong TotalSectors;
+
+            #region IDiskInfo Members
+
+            ulong IDiskInfo.BytesPerCluster => BytesPerCluster;
+            ulong IDiskInfo.BytesPerMftRecord => BytesPerMftRecord;
+            ushort IDiskInfo.BytesPerSector => BytesPerSector;
+
+            uint IDiskInfo.ClustersPerIndexRecord => ClustersPerIndexRecord;
+            uint IDiskInfo.ClustersPerMftRecord => ClustersPerMftRecord;
+            ulong IDiskInfo.Mft2StartLcn => Mft2StartLcn;
+            ulong IDiskInfo.MftStartLcn => MftStartLcn;
+            byte IDiskInfo.SectorsPerCluster => SectorsPerCluster;
+
+            ulong IDiskInfo.TotalClusters => TotalClusters;
+            ulong IDiskInfo.TotalSectors => TotalSectors;
+
+            #endregion IDiskInfo Members
+        }
+
+        /// <summary>
         /// Add some functionality to the basic stream
         /// </summary>
         private sealed class FragmentWrapper : IFragment
@@ -305,52 +322,7 @@ namespace System.IO.Filesystem.Ntfs
 
             public ulong NextVcn => _fragment.NextVcn;
 
-            #endregion
-        }
-
-        /// <summary>
-        /// Add some functionality to the basic stream
-        /// </summary>
-        private sealed class StreamWrapper : IStream
-        {
-            private readonly NtfsReader _reader;
-            private readonly NodeWrapper _parentNode;
-            private readonly int _streamIndex;
-
-            public StreamWrapper(NtfsReader reader, NodeWrapper parentNode, int streamIndex)
-            {
-                _reader = reader;
-                _parentNode = parentNode;
-                _streamIndex = streamIndex;
-            }
-
-            #region IStream Members
-
-            public string? Name => _reader.GetNameFromIndex(_reader._streams![_parentNode.NodeIndex][_streamIndex].NameIndex);
-
-            public ulong Size => _reader._streams![_parentNode.NodeIndex][_streamIndex].Size;
-
-            public IList<IFragment>? Fragments {
-                get {
-                    IList<Fragment> fragments =
-                        _reader._streams![_parentNode.NodeIndex][_streamIndex].Fragments;
-
-                    if (fragments == null || fragments.Count == 0)
-                    {
-                        return null;
-                    }
-
-                    var newFragments = new List<IFragment>();
-                    foreach (var fragment in fragments)
-                    {
-                        newFragments.Add(new FragmentWrapper(this, fragment));
-                    }
-
-                    return newFragments;
-                }
-            }
-
-            #endregion
+            #endregion IFragment Members
         }
 
         /// <summary>
@@ -359,8 +331,8 @@ namespace System.IO.Filesystem.Ntfs
         private sealed class NodeWrapper : INode
         {
             private readonly NtfsReader _reader;
-            private Node _node;
             private string? _fullName;
+            private Node _node;
 
             public NodeWrapper(NtfsReader reader, uint nodeIndex, Node node)
             {
@@ -369,15 +341,7 @@ namespace System.IO.Filesystem.Ntfs
                 _node = node;
             }
 
-            public uint NodeIndex { get; }
-
-            public uint ParentNodeIndex => _node.ParentNodeIndex;
-
             public Attributes Attributes => _node.Attributes;
-
-            public string? Name => _reader.GetNameFromIndex(_node.NameIndex);
-
-            public ulong Size => _node.Size;
 
             public string FullName {
                 get {
@@ -386,6 +350,12 @@ namespace System.IO.Filesystem.Ntfs
                     return _fullName;
                 }
             }
+
+            public string? Name => _reader.GetNameFromIndex(_node.NameIndex);
+            public uint NodeIndex { get; }
+
+            public uint ParentNodeIndex => _node.ParentNodeIndex;
+            public ulong Size => _node.Size;
 
             public IList<IStream>? Streams {
                 get {
@@ -423,17 +393,6 @@ namespace System.IO.Filesystem.Ntfs
                 }
             }
 
-            public DateTime LastChangeTime {
-                get {
-                    if (_reader._standardInformations == null)
-                    {
-                        throw new NotSupportedException("The StandardInformation haven't been retrieved. Make sure to use the proper RetrieveMode.");
-                    }
-
-                    return DateTime.FromFileTimeUtc((long)_reader._standardInformations[NodeIndex].LastChangeTime);
-                }
-            }
-
             public DateTime LastAccessTime {
                 get {
                     if (_reader._standardInformations == null)
@@ -445,76 +404,110 @@ namespace System.IO.Filesystem.Ntfs
                 }
             }
 
-            #endregion
+            public DateTime LastChangeTime {
+                get {
+                    if (_reader._standardInformations == null)
+                    {
+                        throw new NotSupportedException("The StandardInformation haven't been retrieved. Make sure to use the proper RetrieveMode.");
+                    }
+
+                    return DateTime.FromFileTimeUtc((long)_reader._standardInformations[NodeIndex].LastChangeTime);
+                }
+            }
+
+            #endregion INode Members
+        }
+
+        private sealed class Stream
+        {
+            public ulong Clusters;                      // Total number of clusters.
+            public int NameIndex;
+            public ulong Size;                          // Total number of bytes.
+            public AttributeType Type;
+            private List<Fragment>? _fragments;
+
+            public Stream(int nameIndex, AttributeType type, ulong size)
+            {
+                NameIndex = nameIndex;
+                Type = type;
+                Size = size;
+            }
+
+            public List<Fragment> Fragments => _fragments ??= new List<Fragment>(5);
         }
 
         /// <summary>
-        /// Simple structure of available disk informations.
+        /// Add some functionality to the basic stream
         /// </summary>
-        private sealed class DiskInfoWrapper : IDiskInfo
+        private sealed class StreamWrapper : IStream
         {
-            public ushort BytesPerSector;
-            public byte SectorsPerCluster;
-            public ulong TotalSectors;
-            public ulong MftStartLcn;
-            public ulong Mft2StartLcn;
-            public uint ClustersPerMftRecord;
-            public uint ClustersPerIndexRecord;
-            public ulong BytesPerMftRecord;
-            public ulong BytesPerCluster;
-            public ulong TotalClusters;
+            private readonly NodeWrapper _parentNode;
+            private readonly NtfsReader _reader;
+            private readonly int _streamIndex;
 
-            #region IDiskInfo Members
+            public StreamWrapper(NtfsReader reader, NodeWrapper parentNode, int streamIndex)
+            {
+                _reader = reader;
+                _parentNode = parentNode;
+                _streamIndex = streamIndex;
+            }
 
-            ushort IDiskInfo.BytesPerSector => BytesPerSector;
+            #region IStream Members
 
-            byte IDiskInfo.SectorsPerCluster => SectorsPerCluster;
+            public IList<IFragment>? Fragments {
+                get {
+                    IList<Fragment> fragments =
+                        _reader._streams![_parentNode.NodeIndex][_streamIndex].Fragments;
 
-            ulong IDiskInfo.TotalSectors => TotalSectors;
+                    if (fragments == null || fragments.Count == 0)
+                    {
+                        return null;
+                    }
 
-            ulong IDiskInfo.MftStartLcn => MftStartLcn;
+                    var newFragments = new List<IFragment>();
+                    foreach (var fragment in fragments)
+                    {
+                        newFragments.Add(new FragmentWrapper(this, fragment));
+                    }
 
-            ulong IDiskInfo.Mft2StartLcn => Mft2StartLcn;
+                    return newFragments;
+                }
+            }
 
-            uint IDiskInfo.ClustersPerMftRecord => ClustersPerMftRecord;
+            public string? Name => _reader.GetNameFromIndex(_reader._streams![_parentNode.NodeIndex][_streamIndex].NameIndex);
 
-            uint IDiskInfo.ClustersPerIndexRecord => ClustersPerIndexRecord;
+            public ulong Size => _reader._streams![_parentNode.NodeIndex][_streamIndex].Size;
 
-            ulong IDiskInfo.BytesPerMftRecord => BytesPerMftRecord;
-
-            ulong IDiskInfo.BytesPerCluster => BytesPerCluster;
-
-            ulong IDiskInfo.TotalClusters => TotalClusters;
-
-            #endregion
+            #endregion IStream Members
         }
 
-        #endregion
+        #endregion Private Classes
 
         #region Constants
 
-        private const ulong VIRTUAL_FRAGMENT = 18446744073709551615; // _UI64_MAX - 1 */
-        private const uint ROOT_DIRECTORY = 5;
         private const long DEFAULT_NTFS_BOOT_SIGNATURE = 0x202020205346544E;
         private const uint END_MARKER = 0xFFFFFFFF;
+        private const uint ROOT_DIRECTORY = 5;
+        private const ulong VIRTUAL_FRAGMENT = 18446744073709551615; // _UI64_MAX - 1 */
         private readonly byte[] BitmapMasks = [1, 2, 4, 8, 16, 32, 64, 128];
 
-        #endregion
+        #endregion Constants
 
-        private SafeFileHandle? _volumeHandle;
-        private DiskInfoWrapper _diskInfo;
-        private readonly Node[] _nodes;
-        private StandardInformation[]? _standardInformations;
-        private Stream[][]? _streams;
         private readonly DriveInfo _driveInfo;
-        private readonly List<string> _names = [];
-        private readonly RetrieveMode _retrieveMode;
-        private byte[]? _bitmapData;
 
         //preallocate a lot of space for the strings to avoid too much dictionary resizing
         //use ordinal comparison to improve performance
         //this will be deallocated once the MFT reading is finished
         private readonly Dictionary<string, int>? _nameIndex = new Dictionary<string, int>(128 * 1024, StringComparer.Ordinal);
+
+        private readonly List<string> _names = [];
+        private readonly Node[] _nodes;
+        private readonly RetrieveMode _retrieveMode;
+        private byte[]? _bitmapData;
+        private readonly DiskInfoWrapper _diskInfo;
+        private StandardInformation[]? _standardInformations;
+        private Stream[][]? _streams;
+        private SafeFileHandle? _volumeHandle;
 
         #region Events
 
@@ -525,9 +518,14 @@ namespace System.IO.Filesystem.Ntfs
 
         private void OnBitmapDataAvailable() => BitmapDataAvailable?.Invoke(this, EventArgs.Empty);
 
-        #endregion
+        #endregion Events
 
         #region Helpers
+
+        /// <summary>
+        /// Get the string from our stringtable from the given index.
+        /// </summary>
+        private string? GetNameFromIndex(int nameIndex) => nameIndex == 0 ? null : _names[nameIndex];
 
         /// <summary>
         /// Allocate or retrieve an existing index for the particular string.
@@ -547,11 +545,6 @@ namespace System.IO.Filesystem.Ntfs
 
             return _names.Count - 1;
         }
-
-        /// <summary>
-        /// Get the string from our stringtable from the given index.
-        /// </summary>
-        private string? GetNameFromIndex(int nameIndex) => nameIndex == 0 ? null : _names[nameIndex];
 
         private Stream? SearchStream(List<Stream> streams, AttributeType streamType)
         {
@@ -582,7 +575,7 @@ namespace System.IO.Filesystem.Ntfs
             return null;
         }
 
-        #endregion
+        #endregion Helpers
 
         #region File Reading Wrappers
 
@@ -605,169 +598,9 @@ namespace System.IO.Filesystem.Ntfs
             }
         }
 
-        #endregion
+        #endregion File Reading Wrappers
 
         #region Ntfs Interpretor
-
-        /// <summary>
-        /// Read the next contiguous block of information on disk
-        /// </summary>
-        private unsafe bool ReadNextChunk(
-            byte* buffer,
-            uint bufferSize,
-            uint nodeIndex,
-            int fragmentIndex,
-            Stream dataStream,
-            ref ulong BlockStart,
-            ref ulong BlockEnd,
-            ref ulong Vcn,
-            ref ulong RealVcn
-            )
-        {
-            BlockStart = nodeIndex;
-            BlockEnd = BlockStart + (bufferSize / _diskInfo.BytesPerMftRecord);
-            if (BlockEnd > dataStream.Size * 8)
-            {
-                BlockEnd = dataStream.Size * 8;
-            }
-
-            ulong u1 = 0;
-
-            var fragmentCount = dataStream.Fragments.Count;
-            while (fragmentIndex < fragmentCount)
-            {
-                var fragment = dataStream.Fragments[fragmentIndex];
-
-                /* Calculate Inode at the end of the fragment. */
-                u1 = (RealVcn + fragment.NextVcn - Vcn) * _diskInfo.BytesPerSector * _diskInfo.SectorsPerCluster / _diskInfo.BytesPerMftRecord;
-
-                if (u1 > nodeIndex)
-                {
-                    break;
-                }
-
-                do
-                {
-                    if (fragment.Lcn != VIRTUAL_FRAGMENT)
-                    {
-                        RealVcn = RealVcn + fragment.NextVcn - Vcn;
-                    }
-
-                    Vcn = fragment.NextVcn;
-
-                    if (++fragmentIndex >= fragmentCount)
-                    {
-                        break;
-                    }
-                } while (fragment.Lcn == VIRTUAL_FRAGMENT);
-            }
-
-            if (fragmentIndex >= fragmentCount)
-            {
-                return false;
-            }
-
-            if (BlockEnd >= u1)
-            {
-                BlockEnd = u1;
-            }
-
-            var position =
-                ((dataStream.Fragments[fragmentIndex].Lcn - RealVcn) * _diskInfo.BytesPerSector *
-                    _diskInfo.SectorsPerCluster) + (BlockStart * _diskInfo.BytesPerMftRecord);
-
-            ReadFile(buffer, (BlockEnd - BlockStart) * _diskInfo.BytesPerMftRecord, position);
-
-            return true;
-        }
-
-        /// <summary>
-        /// Gather basic disk information we need to interpret data
-        /// </summary>
-        private unsafe DiskInfoWrapper InitializeDiskInfo()
-        {
-            var volumeData = new byte[512];
-
-            fixed (byte* ptr = volumeData)
-            {
-                ReadFile(ptr, volumeData.Length, 0);
-
-                var bootSector = (BootSector*)ptr;
-
-                if (bootSector->Signature != DEFAULT_NTFS_BOOT_SIGNATURE)
-                {
-                    throw new NtfsException("This is not an NTFS disk.");
-                }
-
-                var diskInfo = new DiskInfoWrapper
-                {
-                    BytesPerSector = bootSector->BytesPerSector,
-                    SectorsPerCluster = bootSector->SectorsPerCluster,
-                    TotalSectors = bootSector->TotalSectors,
-                    MftStartLcn = bootSector->MftStartLcn,
-                    Mft2StartLcn = bootSector->Mft2StartLcn,
-                    ClustersPerMftRecord = bootSector->ClustersPerMftRecord,
-                    ClustersPerIndexRecord = bootSector->ClustersPerIndexRecord
-                };
-
-                if (bootSector->ClustersPerMftRecord >= 128)
-                {
-                    diskInfo.BytesPerMftRecord = ((ulong)1 << (byte)(256 - (byte)bootSector->ClustersPerMftRecord));
-                }
-                else
-                {
-                    diskInfo.BytesPerMftRecord = diskInfo.ClustersPerMftRecord * diskInfo.BytesPerSector * diskInfo.SectorsPerCluster;
-                }
-
-                diskInfo.BytesPerCluster = diskInfo.BytesPerSector * (ulong)diskInfo.SectorsPerCluster;
-
-                if (diskInfo.SectorsPerCluster > 0)
-                {
-                    diskInfo.TotalClusters = diskInfo.TotalSectors / diskInfo.SectorsPerCluster;
-                }
-
-                return diskInfo;
-            }
-        }
-
-        /// <summary>
-        /// Used to check/adjust data before we begin to interpret it
-        /// </summary>
-        private unsafe void FixupRawMftdata(byte* buffer, ulong len)
-        {
-            var ntfsFileRecordHeader = (FileRecordHeader*)buffer;
-
-            if (ntfsFileRecordHeader->RecordHeader.Type != RecordType.File)
-            {
-                return;
-            }
-
-            var wordBuffer = (ushort*)buffer;
-
-            var UpdateSequenceArray = (ushort*)(buffer + ntfsFileRecordHeader->RecordHeader.UsaOffset);
-            var increment = (uint)_diskInfo.BytesPerSector / sizeof(ushort);
-
-            var Index = increment - 1;
-
-            for (var i = 1; i < ntfsFileRecordHeader->RecordHeader.UsaCount; i++)
-            {
-                /* Check if we are inside the buffer. */
-                if (Index * sizeof(ushort) >= len)
-                {
-                    throw new NtfsException("USA data indicates that data is missing, the MFT may be corrupt.");
-                }
-
-                // Check if the last 2 bytes of the sector contain the Update Sequence Number.
-                if (wordBuffer[Index] != UpdateSequenceArray[0])
-                {
-                    throw new NtfsException("USA fixup word is not equal to the Update Sequence Number, the MFT may be corrupt.");
-                }
-
-                /* Replace the last 2 bytes in the sector with the value from the Usa array. */
-                wordBuffer[Index] = UpdateSequenceArray[i];
-                Index += increment;
-            }
-        }
 
         /// <summary>
         /// Decode the RunLength value.
@@ -818,109 +651,91 @@ namespace System.IO.Filesystem.Ntfs
         }
 
         /// <summary>
-        /// Read the data that is specified in a RunData list from disk into memory,
-        /// skipping the first Offset bytes.
+        /// Used to check/adjust data before we begin to interpret it
         /// </summary>
-        private unsafe byte[] ProcessNonResidentData(
-            byte* RunData,
-            uint RunDataLength,
-            ulong Offset,         /* Bytes to skip from begin of data. */
-            ulong WantedLength    /* Number of bytes to read. */
-            )
+        private unsafe void FixupRawMftdata(byte* buffer, ulong len)
         {
-            /* Sanity check. */
-            if (RunData == null || RunDataLength == 0)
+            var ntfsFileRecordHeader = (FileRecordHeader*)buffer;
+
+            if (ntfsFileRecordHeader->RecordHeader.Type != RecordType.File)
             {
-                throw new NtfsException("nothing to read");
+                return;
             }
 
-            if (WantedLength >= uint.MaxValue)
+            var wordBuffer = (ushort*)buffer;
+
+            var UpdateSequenceArray = (ushort*)(buffer + ntfsFileRecordHeader->RecordHeader.UsaOffset);
+            var increment = (uint)_diskInfo.BytesPerSector / sizeof(ushort);
+
+            var Index = increment - 1;
+
+            for (var i = 1; i < ntfsFileRecordHeader->RecordHeader.UsaCount; i++)
             {
-                throw new NtfsException("too many bytes to read");
-            }
-
-            /* We have to round up the WantedLength to the nearest sector. For some
-               reason or other Microsoft has decided that raw reading from disk can
-               only be done by whole sector, even though ReadFile() accepts it's
-               parameters in bytes. */
-            if (WantedLength % _diskInfo.BytesPerSector > 0)
-            {
-                WantedLength += _diskInfo.BytesPerSector - (WantedLength % _diskInfo.BytesPerSector);
-            }
-
-            /* Walk through the RunData and read the requested data from disk. */
-            uint Index = 0;
-            long Lcn = 0;
-            long Vcn = 0;
-
-            var buffer = new byte[WantedLength];
-
-            fixed (byte* bufPtr = buffer)
-            {
-                while (RunData[Index] != 0)
+                /* Check if we are inside the buffer. */
+                if (Index * sizeof(ushort) >= len)
                 {
-                    /* Decode the RunData and calculate the next Lcn. */
-                    var RunLengthSize = (RunData[Index] & 0x0F);
-                    var RunOffsetSize = ((RunData[Index] & 0xF0) >> 4);
-
-                    if (++Index >= RunDataLength)
-                    {
-                        throw new NtfsException("Error: datarun is longer than buffer, the MFT may be corrupt.");
-                    }
-
-                    var RunLength =
-                        ProcessRunLength(RunData, RunDataLength, RunLengthSize, ref Index);
-
-                    var RunOffset =
-                        ProcessRunOffset(RunData, RunDataLength, RunOffsetSize, ref Index);
-
-                    // Ignore virtual extents.
-                    if (RunOffset == 0 || RunLength == 0)
-                    {
-                        continue;
-                    }
-
-                    Lcn += RunOffset;
-                    Vcn += RunLength;
-
-                    /* Determine how many and which bytes we want to read. If we don't need
-                       any bytes from this extent then loop. */
-                    var ExtentVcn = (ulong)((Vcn - RunLength) * _diskInfo.BytesPerSector * _diskInfo.SectorsPerCluster);
-                    var ExtentLcn = (ulong)(Lcn * _diskInfo.BytesPerSector * _diskInfo.SectorsPerCluster);
-                    var ExtentLength = (ulong)(RunLength * _diskInfo.BytesPerSector * _diskInfo.SectorsPerCluster);
-
-                    if (Offset >= ExtentVcn + ExtentLength)
-                    {
-                        continue;
-                    }
-
-                    if (Offset > ExtentVcn)
-                    {
-                        ExtentLcn = ExtentLcn + Offset - ExtentVcn;
-                        ExtentLength -= (Offset - ExtentVcn);
-                        ExtentVcn = Offset;
-                    }
-
-                    if (Offset + WantedLength <= ExtentVcn)
-                    {
-                        continue;
-                    }
-
-                    if (Offset + WantedLength < ExtentVcn + ExtentLength)
-                    {
-                        ExtentLength = Offset + WantedLength - ExtentVcn;
-                    }
-
-                    if (ExtentLength == 0)
-                    {
-                        continue;
-                    }
-
-                    ReadFile(bufPtr + ExtentVcn - Offset, ExtentLength, ExtentLcn);
+                    throw new NtfsException("USA data indicates that data is missing, the MFT may be corrupt.");
                 }
-            }
 
-            return buffer;
+                // Check if the last 2 bytes of the sector contain the Update Sequence Number.
+                if (wordBuffer[Index] != UpdateSequenceArray[0])
+                {
+                    throw new NtfsException("USA fixup word is not equal to the Update Sequence Number, the MFT may be corrupt.");
+                }
+
+                /* Replace the last 2 bytes in the sector with the value from the Usa array. */
+                wordBuffer[Index] = UpdateSequenceArray[i];
+                Index += increment;
+            }
+        }
+
+        /// <summary>
+        /// Gather basic disk information we need to interpret data
+        /// </summary>
+        private unsafe DiskInfoWrapper InitializeDiskInfo()
+        {
+            var volumeData = new byte[512];
+
+            fixed (byte* ptr = volumeData)
+            {
+                ReadFile(ptr, volumeData.Length, 0);
+
+                var bootSector = (BootSector*)ptr;
+
+                if (bootSector->Signature != DEFAULT_NTFS_BOOT_SIGNATURE)
+                {
+                    throw new NtfsException("This is not an NTFS disk.");
+                }
+
+                var diskInfo = new DiskInfoWrapper
+                {
+                    BytesPerSector = bootSector->BytesPerSector,
+                    SectorsPerCluster = bootSector->SectorsPerCluster,
+                    TotalSectors = bootSector->TotalSectors,
+                    MftStartLcn = bootSector->MftStartLcn,
+                    Mft2StartLcn = bootSector->Mft2StartLcn,
+                    ClustersPerMftRecord = bootSector->ClustersPerMftRecord,
+                    ClustersPerIndexRecord = bootSector->ClustersPerIndexRecord
+                };
+
+                if (bootSector->ClustersPerMftRecord >= 128)
+                {
+                    diskInfo.BytesPerMftRecord = ((ulong)1 << (byte)(256 - (byte)bootSector->ClustersPerMftRecord));
+                }
+                else
+                {
+                    diskInfo.BytesPerMftRecord = diskInfo.ClustersPerMftRecord * diskInfo.BytesPerSector * diskInfo.SectorsPerCluster;
+                }
+
+                diskInfo.BytesPerCluster = diskInfo.BytesPerSector * (ulong)diskInfo.SectorsPerCluster;
+
+                if (diskInfo.SectorsPerCluster > 0)
+                {
+                    diskInfo.TotalClusters = diskInfo.TotalSectors / diskInfo.SectorsPerCluster;
+                }
+
+                return diskInfo;
+            }
         }
 
         /// <summary>
@@ -1062,6 +877,52 @@ namespace System.IO.Filesystem.Ntfs
         }
 
         /// <summary>
+        /// Process the bitmap data that contains information on inode usage.
+        /// </summary>
+        private unsafe byte[] ProcessBitmapData(List<Stream> streams)
+        {
+            ulong Vcn = 0;
+            ulong MaxMftBitmapBytes = 0;
+
+            var bitmapStream = SearchStream(streams, AttributeType.AttributeBitmap) ?? throw new NtfsException("No Bitmap Data");
+            foreach (var fragment in bitmapStream.Fragments)
+            {
+                if (fragment.Lcn != VIRTUAL_FRAGMENT)
+                {
+                    MaxMftBitmapBytes += (fragment.NextVcn - Vcn) * _diskInfo.BytesPerSector * _diskInfo.SectorsPerCluster;
+                }
+
+                Vcn = fragment.NextVcn;
+            }
+
+            var bitmapData = new byte[MaxMftBitmapBytes];
+
+            fixed (byte* bitmapDataPtr = bitmapData)
+            {
+                Vcn = 0;
+                ulong RealVcn = 0;
+
+                foreach (var fragment in bitmapStream.Fragments)
+                {
+                    if (fragment.Lcn != VIRTUAL_FRAGMENT)
+                    {
+                        ReadFile(
+                            bitmapDataPtr + (RealVcn * _diskInfo.BytesPerSector * _diskInfo.SectorsPerCluster),
+                            (fragment.NextVcn - Vcn) * _diskInfo.BytesPerSector * _diskInfo.SectorsPerCluster,
+                            fragment.Lcn * _diskInfo.BytesPerSector * _diskInfo.SectorsPerCluster
+                            );
+
+                        RealVcn = RealVcn + fragment.NextVcn - Vcn;
+                    }
+
+                    Vcn = fragment.NextVcn;
+                }
+            }
+
+            return bitmapData;
+        }
+
+        /// <summary>
         /// Process fragments for streams
         /// </summary>
         private unsafe void ProcessFragments(
@@ -1119,103 +980,6 @@ namespace System.IO.Filesystem.Ntfs
                     )
                 );
             }
-        }
-
-        /// <summary>
-        /// Process an actual MFT record from the buffer
-        /// </summary>
-        private unsafe bool ProcessMftRecord(byte* buffer, ulong length, uint nodeIndex, out Node node, List<Stream>? streams, bool isMftNode)
-        {
-            node = new Node();
-
-            var ntfsFileRecordHeader = (FileRecordHeader*)buffer;
-
-            if (ntfsFileRecordHeader->RecordHeader.Type != RecordType.File)
-            {
-                return false;
-            }
-
-            //the inode is not in use
-            if ((ntfsFileRecordHeader->Flags & 1) != 1)
-            {
-                return false;
-            }
-
-            var baseInode = ((ulong)ntfsFileRecordHeader->BaseFileRecord.InodeNumberHighPart << 32) + ntfsFileRecordHeader->BaseFileRecord.InodeNumberLowPart;
-
-            //This is an inode extension used in an AttributeAttributeList of another inode, don't parse it
-            if (baseInode != 0)
-            {
-                return false;
-            }
-
-            if (ntfsFileRecordHeader->AttributeOffset >= length)
-            {
-                throw new NtfsException("Error: attributes in Inode %I64u are outside the FILE record, the MFT may be corrupt.");
-            }
-
-            if (ntfsFileRecordHeader->BytesInUse > length)
-            {
-                throw new NtfsException("Error: in Inode %I64u the record is bigger than the size of the buffer, the MFT may be corrupt.");
-            }
-
-            //make the file appear in the rootdirectory by default
-            node.ParentNodeIndex = ROOT_DIRECTORY;
-
-            if ((ntfsFileRecordHeader->Flags & 2) == 2)
-            {
-                node.Attributes |= Attributes.Directory;
-            }
-
-            ProcessAttributes(ref node, nodeIndex, buffer + ntfsFileRecordHeader->AttributeOffset, length - ntfsFileRecordHeader->AttributeOffset, 65535, 0, streams, isMftNode);
-
-            return true;
-        }
-
-        /// <summary>
-        /// Process the bitmap data that contains information on inode usage.
-        /// </summary>
-        private unsafe byte[] ProcessBitmapData(List<Stream> streams)
-        {
-            ulong Vcn = 0;
-            ulong MaxMftBitmapBytes = 0;
-
-            var bitmapStream = SearchStream(streams, AttributeType.AttributeBitmap) ?? throw new NtfsException("No Bitmap Data");
-            foreach (var fragment in bitmapStream.Fragments)
-            {
-                if (fragment.Lcn != VIRTUAL_FRAGMENT)
-                {
-                    MaxMftBitmapBytes += (fragment.NextVcn - Vcn) * _diskInfo.BytesPerSector * _diskInfo.SectorsPerCluster;
-                }
-
-                Vcn = fragment.NextVcn;
-            }
-
-            var bitmapData = new byte[MaxMftBitmapBytes];
-
-            fixed (byte* bitmapDataPtr = bitmapData)
-            {
-                Vcn = 0;
-                ulong RealVcn = 0;
-
-                foreach (var fragment in bitmapStream.Fragments)
-                {
-                    if (fragment.Lcn != VIRTUAL_FRAGMENT)
-                    {
-                        ReadFile(
-                            bitmapDataPtr + (RealVcn * _diskInfo.BytesPerSector * _diskInfo.SectorsPerCluster),
-                            (fragment.NextVcn - Vcn) * _diskInfo.BytesPerSector * _diskInfo.SectorsPerCluster,
-                            fragment.Lcn * _diskInfo.BytesPerSector * _diskInfo.SectorsPerCluster
-                            );
-
-                        RealVcn = RealVcn + fragment.NextVcn - Vcn;
-                    }
-
-                    Vcn = fragment.NextVcn;
-                }
-            }
-
-            return bitmapData;
         }
 
         /// <summary>
@@ -1361,6 +1125,235 @@ namespace System.IO.Filesystem.Ntfs
             }
         }
 
-        #endregion
+        /// <summary>
+        /// Process an actual MFT record from the buffer
+        /// </summary>
+        private unsafe bool ProcessMftRecord(byte* buffer, ulong length, uint nodeIndex, out Node node, List<Stream>? streams, bool isMftNode)
+        {
+            node = new Node();
+
+            var ntfsFileRecordHeader = (FileRecordHeader*)buffer;
+
+            if (ntfsFileRecordHeader->RecordHeader.Type != RecordType.File)
+            {
+                return false;
+            }
+
+            //the inode is not in use
+            if ((ntfsFileRecordHeader->Flags & 1) != 1)
+            {
+                return false;
+            }
+
+            var baseInode = ((ulong)ntfsFileRecordHeader->BaseFileRecord.InodeNumberHighPart << 32) + ntfsFileRecordHeader->BaseFileRecord.InodeNumberLowPart;
+
+            //This is an inode extension used in an AttributeAttributeList of another inode, don't parse it
+            if (baseInode != 0)
+            {
+                return false;
+            }
+
+            if (ntfsFileRecordHeader->AttributeOffset >= length)
+            {
+                throw new NtfsException("Error: attributes in Inode %I64u are outside the FILE record, the MFT may be corrupt.");
+            }
+
+            if (ntfsFileRecordHeader->BytesInUse > length)
+            {
+                throw new NtfsException("Error: in Inode %I64u the record is bigger than the size of the buffer, the MFT may be corrupt.");
+            }
+
+            //make the file appear in the rootdirectory by default
+            node.ParentNodeIndex = ROOT_DIRECTORY;
+
+            if ((ntfsFileRecordHeader->Flags & 2) == 2)
+            {
+                node.Attributes |= Attributes.Directory;
+            }
+
+            ProcessAttributes(ref node, nodeIndex, buffer + ntfsFileRecordHeader->AttributeOffset, length - ntfsFileRecordHeader->AttributeOffset, 65535, 0, streams, isMftNode);
+
+            return true;
+        }
+
+        /// <summary>
+        /// Read the data that is specified in a RunData list from disk into memory,
+        /// skipping the first Offset bytes.
+        /// </summary>
+        private unsafe byte[] ProcessNonResidentData(
+            byte* RunData,
+            uint RunDataLength,
+            ulong Offset,         /* Bytes to skip from begin of data. */
+            ulong WantedLength    /* Number of bytes to read. */
+            )
+        {
+            /* Sanity check. */
+            if (RunData == null || RunDataLength == 0)
+            {
+                throw new NtfsException("nothing to read");
+            }
+
+            if (WantedLength >= uint.MaxValue)
+            {
+                throw new NtfsException("too many bytes to read");
+            }
+
+            /* We have to round up the WantedLength to the nearest sector. For some
+               reason or other Microsoft has decided that raw reading from disk can
+               only be done by whole sector, even though ReadFile() accepts it's
+               parameters in bytes. */
+            if (WantedLength % _diskInfo.BytesPerSector > 0)
+            {
+                WantedLength += _diskInfo.BytesPerSector - (WantedLength % _diskInfo.BytesPerSector);
+            }
+
+            /* Walk through the RunData and read the requested data from disk. */
+            uint Index = 0;
+            long Lcn = 0;
+            long Vcn = 0;
+
+            var buffer = new byte[WantedLength];
+
+            fixed (byte* bufPtr = buffer)
+            {
+                while (RunData[Index] != 0)
+                {
+                    /* Decode the RunData and calculate the next Lcn. */
+                    var RunLengthSize = (RunData[Index] & 0x0F);
+                    var RunOffsetSize = ((RunData[Index] & 0xF0) >> 4);
+
+                    if (++Index >= RunDataLength)
+                    {
+                        throw new NtfsException("Error: datarun is longer than buffer, the MFT may be corrupt.");
+                    }
+
+                    var RunLength =
+                        ProcessRunLength(RunData, RunDataLength, RunLengthSize, ref Index);
+
+                    var RunOffset =
+                        ProcessRunOffset(RunData, RunDataLength, RunOffsetSize, ref Index);
+
+                    // Ignore virtual extents.
+                    if (RunOffset == 0 || RunLength == 0)
+                    {
+                        continue;
+                    }
+
+                    Lcn += RunOffset;
+                    Vcn += RunLength;
+
+                    /* Determine how many and which bytes we want to read. If we don't need
+                       any bytes from this extent then loop. */
+                    var ExtentVcn = (ulong)((Vcn - RunLength) * _diskInfo.BytesPerSector * _diskInfo.SectorsPerCluster);
+                    var ExtentLcn = (ulong)(Lcn * _diskInfo.BytesPerSector * _diskInfo.SectorsPerCluster);
+                    var ExtentLength = (ulong)(RunLength * _diskInfo.BytesPerSector * _diskInfo.SectorsPerCluster);
+
+                    if (Offset >= ExtentVcn + ExtentLength)
+                    {
+                        continue;
+                    }
+
+                    if (Offset > ExtentVcn)
+                    {
+                        ExtentLcn = ExtentLcn + Offset - ExtentVcn;
+                        ExtentLength -= (Offset - ExtentVcn);
+                        ExtentVcn = Offset;
+                    }
+
+                    if (Offset + WantedLength <= ExtentVcn)
+                    {
+                        continue;
+                    }
+
+                    if (Offset + WantedLength < ExtentVcn + ExtentLength)
+                    {
+                        ExtentLength = Offset + WantedLength - ExtentVcn;
+                    }
+
+                    if (ExtentLength == 0)
+                    {
+                        continue;
+                    }
+
+                    ReadFile(bufPtr + ExtentVcn - Offset, ExtentLength, ExtentLcn);
+                }
+            }
+
+            return buffer;
+        }
+
+        /// <summary>
+        /// Read the next contiguous block of information on disk
+        /// </summary>
+        private unsafe bool ReadNextChunk(
+            byte* buffer,
+            uint bufferSize,
+            uint nodeIndex,
+            int fragmentIndex,
+            Stream dataStream,
+            ref ulong BlockStart,
+            ref ulong BlockEnd,
+            ref ulong Vcn,
+            ref ulong RealVcn
+            )
+        {
+            BlockStart = nodeIndex;
+            BlockEnd = BlockStart + (bufferSize / _diskInfo.BytesPerMftRecord);
+            if (BlockEnd > dataStream.Size * 8)
+            {
+                BlockEnd = dataStream.Size * 8;
+            }
+
+            ulong u1 = 0;
+
+            var fragmentCount = dataStream.Fragments.Count;
+            while (fragmentIndex < fragmentCount)
+            {
+                var fragment = dataStream.Fragments[fragmentIndex];
+
+                /* Calculate Inode at the end of the fragment. */
+                u1 = (RealVcn + fragment.NextVcn - Vcn) * _diskInfo.BytesPerSector * _diskInfo.SectorsPerCluster / _diskInfo.BytesPerMftRecord;
+
+                if (u1 > nodeIndex)
+                {
+                    break;
+                }
+
+                do
+                {
+                    if (fragment.Lcn != VIRTUAL_FRAGMENT)
+                    {
+                        RealVcn = RealVcn + fragment.NextVcn - Vcn;
+                    }
+
+                    Vcn = fragment.NextVcn;
+
+                    if (++fragmentIndex >= fragmentCount)
+                    {
+                        break;
+                    }
+                } while (fragment.Lcn == VIRTUAL_FRAGMENT);
+            }
+
+            if (fragmentIndex >= fragmentCount)
+            {
+                return false;
+            }
+
+            if (BlockEnd >= u1)
+            {
+                BlockEnd = u1;
+            }
+
+            var position =
+                ((dataStream.Fragments[fragmentIndex].Lcn - RealVcn) * _diskInfo.BytesPerSector *
+                    _diskInfo.SectorsPerCluster) + (BlockStart * _diskInfo.BytesPerMftRecord);
+
+            ReadFile(buffer, (BlockEnd - BlockStart) * _diskInfo.BytesPerMftRecord, position);
+
+            return true;
+        }
+
+        #endregion Ntfs Interpretor
     }
 }

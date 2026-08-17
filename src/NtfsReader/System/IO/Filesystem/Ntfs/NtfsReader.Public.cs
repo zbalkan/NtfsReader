@@ -27,12 +27,13 @@
     Danny Couture
     Software Architect
 */
-using System.Collections.Generic;
-using System.Text;
-using System.Diagnostics;
+
 using System.Collections.Concurrent;
-using System.Threading.Tasks;
+using System.Collections.Generic;
+using System.Diagnostics;
 using System.Linq;
+using System.Text;
+using System.Threading.Tasks;
 
 namespace System.IO.Filesystem.Ntfs
 {
@@ -47,10 +48,6 @@ namespace System.IO.Filesystem.Ntfs
     /// <remarks>Admnistrator rights are required in order to use this method.</remarks>
     public partial class NtfsReader
     {
-        public IDiskInfo DiskInfo => _diskInfo;
-
-        public byte[]? VolumeBitmap => _bitmapData;
-
         private static readonly char[] trimChars = ['\\'];
 
         /// <summary>
@@ -105,6 +102,11 @@ namespace System.IO.Filesystem.Ntfs
 
             GC.Collect();
         }
+
+        public IDiskInfo DiskInfo => _diskInfo;
+
+        public byte[]? VolumeBitmap => _bitmapData;
+
         /// <summary>
         /// Get all nodes under the specified rootPath.
         /// </summary>
@@ -170,17 +172,15 @@ namespace System.IO.Filesystem.Ntfs
 
             return nodes.ToList();
         }
+
         #region IDisposable Members
 
         public void Dispose()
         {
-            if (_volumeHandle != null)
-            {
-                _volumeHandle.Dispose();
-                _volumeHandle = null;
-            }
+            _volumeHandle?.Dispose();
+            _volumeHandle = null;
         }
 
-        #endregion
+        #endregion IDisposable Members
     }
 }

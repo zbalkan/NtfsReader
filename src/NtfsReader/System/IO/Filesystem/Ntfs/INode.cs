@@ -27,9 +27,12 @@
     Danny Couture
     Software Architect
 */
+
 using System.Collections.Generic;
 
+#pragma warning disable IDE0130 // Namespace does not match folder structure
 namespace System.IO.Filesystem.Ntfs
+#pragma warning restore IDE0130 // Namespace does not match folder structure
 {
     /// <summary>
     /// Directory & Files Information are stored in inodes
@@ -37,15 +40,14 @@ namespace System.IO.Filesystem.Ntfs
     public interface INode
     {
         Attributes Attributes { get; }
+        DateTime CreationTime { get; }
+        string FullName { get; }
+        DateTime LastAccessTime { get; }
+        DateTime LastChangeTime { get; }
+        string? Name { get; }
         uint NodeIndex { get; }
         uint ParentNodeIndex { get; }
-        string? Name { get; }
         ulong Size { get; }
-        string FullName { get; }
         IList<IStream>? Streams { get; }
-
-        DateTime CreationTime { get; }
-        DateTime LastChangeTime { get; }
-        DateTime LastAccessTime { get; }
     }
 }

@@ -27,17 +27,20 @@
     Danny Couture
     Software Architect
 */
+
 using System.Collections.Generic;
 
+#pragma warning disable IDE0130 // Namespace does not match folder structure
 namespace System.IO.Filesystem.Ntfs
+#pragma warning restore IDE0130 // Namespace does not match folder structure
 {
     /// <summary>
     /// In Ntfs, each node may have multiple streams.
     /// </summary>
     public interface IStream
     {
+        IList<IFragment>? Fragments { get; }
         string? Name { get; }
         ulong Size { get; }
-        IList<IFragment>? Fragments { get; }
     }
 }

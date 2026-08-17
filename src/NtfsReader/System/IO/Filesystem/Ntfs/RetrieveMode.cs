@@ -16,18 +16,21 @@
     You should have received a copy of the GNU Lesser General Public
     License along with this library; if not, write to the Free Software
     Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
-  
+
     For the full text of the license see the "License.txt" file.
 
     This library is based on the work of Jeroen Kessels, Author of JkDefrag.
     http://www.kessels.com/Jkdefrag/
-    
+
     Special thanks goes to him.
-  
+
     Danny Couture
     Software Architect
 */
+
+#pragma warning disable IDE0130 // Namespace does not match folder structure
 namespace System.IO.Filesystem.Ntfs
+#pragma warning restore IDE0130 // Namespace does not match folder structure
 {
     /// <summary>
     /// Allow one to retrieve only needed information to reduce memory footprint.
@@ -48,12 +51,12 @@ namespace System.IO.Filesystem.Ntfs
         /// <summary>
         /// Retrieve file's streams information.
         /// </summary>
-        Streams = 2,
+        Streams = 1 << 1,
 
         /// <summary>
         /// Retrieve file's fragments information.
         /// </summary>
-        Fragments = 4,
+        Fragments = 1 << 2,
 
         /// <summary>
         /// Retrieve all information available.

@@ -27,7 +27,10 @@
     Danny Couture
     Software Architect
 */
+
+#pragma warning disable IDE0130 // Namespace does not match folder structure
 namespace System.IO.Filesystem.Ntfs
+#pragma warning restore IDE0130 // Namespace does not match folder structure
 {
     /// <summary>
     /// This is where the parts of the file are located on the volume.
