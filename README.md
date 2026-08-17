@@ -1,4 +1,8 @@
 # NtfsReader
+
+This fork tries to update the NtfsReader project for personal projects. It is not meant for distribution.
+
+
 Modifications:
 - source on Github instead of sourceforge
 - netstandard2.0 targetting project file added to allow library to be consumed from .NET Core
