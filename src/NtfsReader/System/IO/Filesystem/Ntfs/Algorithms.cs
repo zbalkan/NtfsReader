@@ -48,13 +48,7 @@ namespace System.IO.Filesystem.Ntfs
                     continue;
                 }
 
-                var fragments = streams[0].Fragments;
-                if (fragments == null)
-                {
-                    continue;
-                }
-
-                var fragmentCount = (uint)fragments.Count;
+                var fragmentCount = (uint)streams[0].FragmentCount;
 
                 if (fragmentCount < minimumFragments)
                 {

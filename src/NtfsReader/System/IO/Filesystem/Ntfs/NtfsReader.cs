@@ -30,7 +30,9 @@
 
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Numerics;
 using System.Runtime.InteropServices;
+using System.Threading;
 using Microsoft.Win32.SafeHandles;
 
 namespace System.IO.Filesystem.Ntfs
@@ -247,6 +249,15 @@ namespace System.IO.Filesystem.Ntfs
             public ulong Size;
         }
 
+        private readonly record struct StreamKey(AttributeType Type, int NameIndex);
+
+        private struct MftReadCursor
+        {
+            public int FragmentIndex;
+            public ulong RealVcn;
+            public ulong Vcn;
+        }
+
         /// <summary>
         /// Contains extra information not required for basic purposes.
         /// </summary>
@@ -331,8 +342,8 @@ namespace System.IO.Filesystem.Ntfs
         private sealed class NodeWrapper : INode
         {
             private readonly NtfsReader _reader;
-            private string? _fullName;
             private Node _node;
+            private IList<IStream>? _streamView;
 
             public NodeWrapper(NtfsReader reader, uint nodeIndex, Node node)
             {
@@ -344,11 +355,7 @@ namespace System.IO.Filesystem.Ntfs
             public Attributes Attributes => _node.Attributes;
 
             public string FullName {
-                get {
-                    _fullName ??= _reader.GetNodeFullNameCore(NodeIndex);
-
-                    return _fullName;
-                }
+                get => _reader.GetNodeFullNameCore(NodeIndex);
             }
 
             public string? Name => _reader.GetNameFromIndex(_node.NameIndex);
@@ -364,19 +371,26 @@ namespace System.IO.Filesystem.Ntfs
                         throw new NotSupportedException("The streams haven't been retrieved. Make sure to use the proper RetrieveMode.");
                     }
 
+                    if (_streamView != null)
+                    {
+                        return _streamView;
+                    }
+
                     var streams = _reader._streams[NodeIndex];
                     if (streams == null)
                     {
                         return null;
                     }
 
-                    var newStreams = new List<IStream>();
+                    var newStreams = new IStream[streams.Length];
                     for (var i = 0; i < streams.Length; ++i)
                     {
-                        newStreams.Add(new StreamWrapper(_reader, this, i));
+                        newStreams[i] = new StreamWrapper(_reader, this, i);
                     }
 
-                    return newStreams;
+                    var view = Array.AsReadOnly(newStreams);
+                    Interlocked.CompareExchange(ref _streamView, view, null);
+                    return _streamView;
                 }
             }
 
@@ -444,6 +458,7 @@ namespace System.IO.Filesystem.Ntfs
             private readonly NodeWrapper _parentNode;
             private readonly NtfsReader _reader;
             private readonly int _streamIndex;
+            private IList<IFragment>? _fragmentView;
 
             public StreamWrapper(NtfsReader reader, NodeWrapper parentNode, int streamIndex)
             {
@@ -454,8 +469,16 @@ namespace System.IO.Filesystem.Ntfs
 
             #region IStream Members
 
+            public int FragmentCount =>
+                _reader._streams![_parentNode.NodeIndex][_streamIndex].Fragments.Count;
+
             public IList<IFragment>? Fragments {
                 get {
+                    if (_fragmentView != null)
+                    {
+                        return _fragmentView;
+                    }
+
                     IList<Fragment> fragments =
                         _reader._streams![_parentNode.NodeIndex][_streamIndex].Fragments;
 
@@ -464,13 +487,15 @@ namespace System.IO.Filesystem.Ntfs
                         return null;
                     }
 
-                    var newFragments = new List<IFragment>();
-                    foreach (var fragment in fragments)
+                    var newFragments = new IFragment[fragments.Count];
+                    for (var i = 0; i < fragments.Count; i++)
                     {
-                        newFragments.Add(new FragmentWrapper(this, fragment));
+                        newFragments[i] = new FragmentWrapper(this, fragments[i]);
                     }
 
-                    return newFragments;
+                    var view = Array.AsReadOnly(newFragments);
+                    Interlocked.CompareExchange(ref _fragmentView, view, null);
+                    return _fragmentView;
                 }
             }
 
@@ -489,8 +514,6 @@ namespace System.IO.Filesystem.Ntfs
         private const uint END_MARKER = 0xFFFFFFFF;
         private const uint ROOT_DIRECTORY = 5;
         private const ulong VIRTUAL_FRAGMENT = 18446744073709551615; // _UI64_MAX - 1 */
-        private readonly byte[] BitmapMasks = [1, 2, 4, 8, 16, 32, 64, 128];
-
         #endregion Constants
 
         private readonly DriveInfo _driveInfo;
@@ -508,6 +531,11 @@ namespace System.IO.Filesystem.Ntfs
         private StandardInformation[]? _standardInformations;
         private Stream[][]? _streams;
         private SafeFileHandle? _volumeHandle;
+        private string?[] _fullPathCache = [];
+        private readonly object _fullPathCacheLock = new();
+        private uint[] _childOffsets = [];
+        private uint[] _children = [];
+        private Dictionary<ChildKey, uint> _childLookup = [];
 
         #region Events
 
@@ -750,6 +778,7 @@ namespace System.IO.Filesystem.Ntfs
         private unsafe void ProcessAttributes(ref Node node, uint nodeIndex, byte* ptr, ulong BufLength, ushort instance, int depth, List<Stream>? streams, bool isMftNode)
         {
             Attribute* attribute = null;
+            Dictionary<StreamKey, Stream>? streamIndex = null;
             for (uint AttributeOffset = 0; AttributeOffset < BufLength; AttributeOffset += attribute->Length)
             {
                 attribute = (Attribute*)(ptr + AttributeOffset);
@@ -847,13 +876,29 @@ namespace System.IO.Filesystem.Ntfs
                         }
 
                         //find or create the stream
-                        var stream =
-                            SearchStream(streams, attribute->AttributeType, streamNameIndex);
+                        Stream? stream;
+                        if (streamIndex == null)
+                        {
+                            stream = SearchStream(streams, attribute->AttributeType, streamNameIndex);
+                            if (streams.Count >= 8)
+                            {
+                                streamIndex = new Dictionary<StreamKey, Stream>(streams.Count);
+                                foreach (var existingStream in streams)
+                                {
+                                    streamIndex[new StreamKey(existingStream.Type, existingStream.NameIndex)] = existingStream;
+                                }
+                            }
+                        }
+                        else
+                        {
+                            streamIndex.TryGetValue(new StreamKey(attribute->AttributeType, streamNameIndex), out stream);
+                        }
 
                         if (stream == null)
                         {
                             stream = new Stream(streamNameIndex, attribute->AttributeType, nonResidentAttribute->DataSize);
                             streams.Add(stream);
+                            streamIndex?.Add(new StreamKey(attribute->AttributeType, streamNameIndex), stream);
                         }
                         else if (stream.Size == 0)
                         {
@@ -1051,18 +1096,15 @@ namespace System.IO.Filesystem.Ntfs
                    buffer and then given one by one to the InterpretMftRecord() subroutine. */
 
                 ulong BlockStart = 0, BlockEnd = 0;
-                ulong RealVcn = 0, Vcn = 0;
+                var readCursor = new MftReadCursor();
 
                 var stopwatch = new Stopwatch();
                 stopwatch.Start();
 
                 ulong totalBytesRead = 0;
-                const int fragmentIndex = 0;
-                var fragmentCount = dataStream.Fragments.Count;
-                for (uint nodeIndex = 1; nodeIndex < maxInode; nodeIndex++)
+                foreach (var nodeIndex in EnumerateOccupiedNodes(_bitmapData, maxInode))
                 {
-                    // Ignore the Inode if the bitmap says it's not in use.
-                    if ((_bitmapData[nodeIndex >> 3] & BitmapMasks[nodeIndex % 8]) == 0)
+                    if (nodeIndex == 0)
                     {
                         continue;
                     }
@@ -1073,12 +1115,10 @@ namespace System.IO.Filesystem.Ntfs
                                 buffer,
                                 bufferSize,
                                 nodeIndex,
-                                fragmentIndex,
                                 dataStream,
                                 ref BlockStart,
                                 ref BlockEnd,
-                                ref Vcn,
-                                ref RealVcn))
+                                ref readCursor))
                         {
                             break;
                         }
@@ -1295,12 +1335,10 @@ namespace System.IO.Filesystem.Ntfs
             byte* buffer,
             uint bufferSize,
             uint nodeIndex,
-            int fragmentIndex,
             Stream dataStream,
             ref ulong BlockStart,
             ref ulong BlockEnd,
-            ref ulong Vcn,
-            ref ulong RealVcn
+            ref MftReadCursor cursor
             )
         {
             BlockStart = nodeIndex;
@@ -1313,35 +1351,42 @@ namespace System.IO.Filesystem.Ntfs
             ulong u1 = 0;
 
             var fragmentCount = dataStream.Fragments.Count;
-            while (fragmentIndex < fragmentCount)
+            while (cursor.FragmentIndex < fragmentCount)
             {
-                var fragment = dataStream.Fragments[fragmentIndex];
+                var fragment = dataStream.Fragments[cursor.FragmentIndex];
 
                 /* Calculate Inode at the end of the fragment. */
-                u1 = (RealVcn + fragment.NextVcn - Vcn) * _diskInfo.BytesPerSector * _diskInfo.SectorsPerCluster / _diskInfo.BytesPerMftRecord;
+                u1 = (cursor.RealVcn + (fragment.Lcn == VIRTUAL_FRAGMENT ? 0 : fragment.NextVcn - cursor.Vcn)) *
+                    _diskInfo.BytesPerSector * _diskInfo.SectorsPerCluster / _diskInfo.BytesPerMftRecord;
 
                 if (u1 > nodeIndex)
                 {
                     break;
                 }
 
-                do
+                while (cursor.FragmentIndex < fragmentCount && u1 <= nodeIndex)
                 {
+                    fragment = dataStream.Fragments[cursor.FragmentIndex];
                     if (fragment.Lcn != VIRTUAL_FRAGMENT)
                     {
-                        RealVcn = RealVcn + fragment.NextVcn - Vcn;
+                        cursor.RealVcn += fragment.NextVcn - cursor.Vcn;
                     }
 
-                    Vcn = fragment.NextVcn;
+                    cursor.Vcn = fragment.NextVcn;
+                    cursor.FragmentIndex++;
 
-                    if (++fragmentIndex >= fragmentCount)
+                    if (cursor.FragmentIndex >= fragmentCount)
                     {
                         break;
                     }
-                } while (fragment.Lcn == VIRTUAL_FRAGMENT);
+
+                    fragment = dataStream.Fragments[cursor.FragmentIndex];
+                    u1 = (cursor.RealVcn + (fragment.Lcn == VIRTUAL_FRAGMENT ? 0 : fragment.NextVcn - cursor.Vcn)) *
+                        _diskInfo.BytesPerSector * _diskInfo.SectorsPerCluster / _diskInfo.BytesPerMftRecord;
+                }
             }
 
-            if (fragmentIndex >= fragmentCount)
+            if (cursor.FragmentIndex >= fragmentCount)
             {
                 return false;
             }
@@ -1352,12 +1397,31 @@ namespace System.IO.Filesystem.Ntfs
             }
 
             var position =
-                ((dataStream.Fragments[fragmentIndex].Lcn - RealVcn) * _diskInfo.BytesPerSector *
+                ((dataStream.Fragments[cursor.FragmentIndex].Lcn - cursor.RealVcn) * _diskInfo.BytesPerSector *
                     _diskInfo.SectorsPerCluster) + (BlockStart * _diskInfo.BytesPerMftRecord);
 
             ReadFile(buffer, (BlockEnd - BlockStart) * _diskInfo.BytesPerMftRecord, position);
 
             return true;
+        }
+
+        private static IEnumerable<uint> EnumerateOccupiedNodes(byte[] bitmap, uint maxInode)
+        {
+            for (var byteIndex = 0; byteIndex < bitmap.Length; byteIndex++)
+            {
+                var occupied = (uint)bitmap[byteIndex];
+                while (occupied != 0)
+                {
+                    var nodeIndex = ((uint)byteIndex << 3) + (uint)BitOperations.TrailingZeroCount(occupied);
+                    if (nodeIndex >= maxInode)
+                    {
+                        yield break;
+                    }
+
+                    yield return nodeIndex;
+                    occupied &= occupied - 1;
+                }
+            }
         }
 
         #endregion Ntfs Interpretor

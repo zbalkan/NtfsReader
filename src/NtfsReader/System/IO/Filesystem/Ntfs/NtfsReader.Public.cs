@@ -96,6 +96,8 @@ namespace System.IO.Filesystem.Ntfs
                 _nodes = ProcessMft();
             }
 
+            BuildHierarchyIndexes();
+
             //cleanup anything that isn't used anymore
             _nameIndex = null;
             _volumeHandle = null;
@@ -113,17 +115,19 @@ namespace System.IO.Filesystem.Ntfs
         /// <param name="rootPath">The rootPath must at least contains the drive and may include any number of subdirectories. Wildcards aren't supported.</param>
         public List<INode> GetNodes(string rootPath)
         {
+            ArgumentNullException.ThrowIfNull(rootPath);
             var stopwatch = new Stopwatch();
             stopwatch.Start();
 
             var nodes = new List<INode>();
-
-            var nodeCount = (uint)_nodes.Length;
-            for (uint i = 0; i < nodeCount; ++i)
+            if (TryResolveRootPath(rootPath, out var rootNodeIndex))
             {
-                if (_nodes[i].NameIndex != 0 && GetNodeFullNameCore(i).StartsWith(rootPath, StringComparison.InvariantCultureIgnoreCase))
+                foreach (var i in EnumerateSubtree(rootNodeIndex))
                 {
-                    nodes.Add(new NodeWrapper(this, i, _nodes[i]));
+                    if (_nodes[i].NameIndex != 0)
+                    {
+                        nodes.Add(new NodeWrapper(this, i, _nodes[i]));
+                    }
                 }
             }
 
@@ -148,17 +152,22 @@ namespace System.IO.Filesystem.Ntfs
         /// <exception cref="AggregateException"></exception>
         public List<INode> GetNodesParallel(string rootPath)
         {
+            ArgumentNullException.ThrowIfNull(rootPath);
             var stopwatch = new Stopwatch();
             stopwatch.Start();
 
+            if (!TryResolveRootPath(rootPath, out var rootNodeIndex))
+            {
+                return [];
+            }
+
             var nodes = new ConcurrentBag<INode>();
-            var nodeCount = (uint)_nodes.Length;
+            var descendantIndexes = EnumerateSubtree(rootNodeIndex).ToArray();
             _ = Parallel.For(0,
-                nodeCount,
+                descendantIndexes.Length,
                 index => {
-                    var i = Convert.ToUInt32(index);
-                    if (_nodes[i].NameIndex != 0 && GetNodeFullNameCore(i)
-                            .StartsWith(rootPath, StringComparison.InvariantCultureIgnoreCase))
+                    var i = descendantIndexes[index];
+                    if (_nodes[i].NameIndex != 0)
                     {
                         nodes.Add(new NodeWrapper(this, i, _nodes[i]));
                     }

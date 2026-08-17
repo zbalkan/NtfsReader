@@ -39,6 +39,7 @@ namespace System.IO.Filesystem.Ntfs
     /// </summary>
     public interface IStream
     {
+        int FragmentCount => Fragments?.Count ?? 0;
         IList<IFragment>? Fragments { get; }
         string? Name { get; }
         ulong Size { get; }
