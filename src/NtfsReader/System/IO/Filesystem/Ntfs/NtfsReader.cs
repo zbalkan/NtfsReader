@@ -528,6 +528,7 @@ namespace System.IO.Filesystem.Ntfs
         #endregion Constants
 
         private readonly DriveInfo _driveInfo;
+        private readonly string _driveRoot;
 
         // This index only lives while the MFT is being read. Do not eagerly reserve a
         // large table: that made even small-volume scans allocate arrays for 131,072

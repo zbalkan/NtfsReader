@@ -31,7 +31,6 @@
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
-using System.Text;
 
 namespace System.IO.Filesystem.Ntfs
 {
@@ -70,17 +69,28 @@ namespace System.IO.Filesystem.Ntfs
             }
 
             _driveInfo = driveInfo;
+            _driveRoot = _driveInfo.Name.AsSpan().TrimEnd('\\').ToString();
             _retrieveMode = retrieveMode;
 
-            var builder = new StringBuilder(1024);
-            if (!GetVolumeNameForVolumeMountPoint(_driveInfo.RootDirectory.Name, builder, builder.Capacity))
+            Span<char> volumeNameBuffer = stackalloc char[1024];
+            if (!GetVolumeNameForVolumeMountPoint(_driveInfo.RootDirectory.Name, volumeNameBuffer))
             {
                 throw new IOException(
                     $"Unable to resolve the volume name for {driveInfo}. Win32 error: {Marshal.GetLastPInvokeError()}."
                 );
             }
 
-            var volume = builder.ToString().TrimEnd(trimChars);
+            var volumeNameLength = volumeNameBuffer.IndexOf('\0');
+            if (volumeNameLength <= 0)
+            {
+                throw new IOException($"The resolved volume name for {driveInfo} is empty or unterminated.");
+            }
+
+            var volume = new string(
+                volumeNameBuffer[..(volumeNameBuffer[volumeNameLength - 1] == '\\'
+                    ? volumeNameLength - 1
+                    : volumeNameLength)]
+            );
             var fileShare = consistency == VolumeReadConsistency.DenyConcurrentWrites
                 ? FileShare.Read
                 : FileShare.All;
@@ -147,7 +157,7 @@ namespace System.IO.Filesystem.Ntfs
             {
                 var link = links[index];
                 var parentPath = link.ParentNodeIndex == ROOT_DIRECTORY
-                    ? _driveInfo.Name.TrimEnd(trimChars)
+                    ? _driveRoot
                     : GetNodeFullNameCore(link.ParentNodeIndex);
                 paths[index] = $"{parentPath}\\{GetNameFromIndex(link.NameIndex)}";
             }

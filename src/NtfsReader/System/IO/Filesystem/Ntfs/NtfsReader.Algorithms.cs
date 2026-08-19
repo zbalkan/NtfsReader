@@ -28,8 +28,8 @@
     Software Architect
 */
 
+using System.Buffers;
 using System.Collections.Generic;
-using System.Text;
 using System.Threading;
 
 namespace System.IO.Filesystem.Ntfs
@@ -38,7 +38,15 @@ namespace System.IO.Filesystem.Ntfs
     {
         private readonly record struct ChildKey(uint ParentNodeIndex, string Name);
 
-        private sealed class ChildKeyComparer : IEqualityComparer<ChildKey>
+        private readonly ref struct ChildPathKey(uint parentNodeIndex, ReadOnlySpan<char> name)
+        {
+            public uint ParentNodeIndex { get; } = parentNodeIndex;
+            public ReadOnlySpan<char> Name { get; } = name;
+        }
+
+        private sealed class ChildKeyComparer :
+            IEqualityComparer<ChildKey>,
+            IAlternateEqualityComparer<ChildPathKey, ChildKey>
         {
             public static ChildKeyComparer Instance { get; } = new();
 
@@ -48,10 +56,24 @@ namespace System.IO.Filesystem.Ntfs
 
             public int GetHashCode(ChildKey obj) =>
                 HashCode.Combine(obj.ParentNodeIndex, StringComparer.OrdinalIgnoreCase.GetHashCode(obj.Name));
+
+            public bool Equals(ChildPathKey alternate, ChildKey other) =>
+                alternate.ParentNodeIndex == other.ParentNodeIndex &&
+                alternate.Name.Equals(other.Name.AsSpan(), StringComparison.OrdinalIgnoreCase);
+
+            public int GetHashCode(ChildPathKey alternate) =>
+                HashCode.Combine(
+                    alternate.ParentNodeIndex,
+                    string.GetHashCode(alternate.Name, StringComparison.OrdinalIgnoreCase)
+                );
+
+            public ChildKey Create(ChildPathKey alternate) =>
+                new(alternate.ParentNodeIndex, alternate.Name.ToString());
         }
 
         /// <summary>
-        /// Construct the full path while publishing immutable cache entries without serializing concurrent callers.
+        /// Constructs and caches a full path with one exact-length string allocation. Traversal
+        /// storage is rented only while the cache miss is being resolved.
         /// </summary>
         private string GetNodeFullNameCore(uint nodeIndex)
         {
@@ -67,49 +89,81 @@ namespace System.IO.Filesystem.Ntfs
             }
 
             var node = nodeIndex;
-            var prefix = _driveInfo.Name.TrimEnd(trimChars);
-            var fullPathNodes = new Stack<uint>();
-            var visitedNodes = new HashSet<uint>();
+            var prefix = _driveRoot;
+            var pathNodes = ArrayPool<uint>.Shared.Rent(8);
+            var pathNodeCount = 0;
 
-            while (true)
+            try
             {
-                cachedPath = Volatile.Read(ref _fullPathCache[node]);
-                if (cachedPath != null)
+                while (true)
                 {
-                    prefix = cachedPath;
-                    break;
+                    cachedPath = Volatile.Read(ref _fullPathCache[node]);
+                    if (cachedPath != null)
+                    {
+                        prefix = cachedPath;
+                        break;
+                    }
+
+                    if (pathNodes.AsSpan(0, pathNodeCount).Contains(node))
+                    {
+                        throw new InvalidDataException($"Detected a parent cycle while resolving node {nodeIndex}.");
+                    }
+
+                    if (pathNodeCount == pathNodes.Length)
+                    {
+                        var expandedPathNodes = ArrayPool<uint>.Shared.Rent(checked(pathNodes.Length * 2));
+                        pathNodes.AsSpan(0, pathNodeCount).CopyTo(expandedPathNodes);
+                        ArrayPool<uint>.Shared.Return(pathNodes);
+                        pathNodes = expandedPathNodes;
+                    }
+
+                    pathNodes[pathNodeCount++] = node;
+                    var parent = _nodes[node].ParentNodeIndex;
+                    if (parent == ROOT_DIRECTORY)
+                    {
+                        break;
+                    }
+
+                    if (parent >= _nodes.Length)
+                    {
+                        throw new InvalidDataException($"Parent node index {parent} for node {node} is outside the MFT.");
+                    }
+
+                    node = parent;
                 }
 
-                if (!visitedNodes.Add(node))
+                var fullPathLength = checked(prefix.Length + pathNodeCount);
+                for (var index = 0; index < pathNodeCount; index++)
                 {
-                    throw new InvalidDataException($"Detected a parent cycle while resolving node {nodeIndex}.");
+                    fullPathLength = checked(fullPathLength + (GetNameFromIndex(_nodes[pathNodes[index]].NameIndex)?.Length ?? 0));
                 }
 
-                fullPathNodes.Push(node);
-                var parent = _nodes[node].ParentNodeIndex;
-                if (parent == ROOT_DIRECTORY)
-                {
-                    break;
-                }
+                var computedPath = string.Create(
+                    fullPathLength,
+                    (Reader: this, Prefix: prefix, Nodes: pathNodes, Count: pathNodeCount),
+                    static (destination, state) =>
+                    {
+                        var destinationOffset = state.Prefix.Length;
+                        state.Prefix.AsSpan().CopyTo(destination);
 
-                if (parent >= _nodes.Length)
-                {
-                    throw new InvalidDataException($"Parent node index {parent} for node {node} is outside the MFT.");
-                }
-
-                node = parent;
+                        for (var index = state.Count - 1; index >= 0; index--)
+                        {
+                            destination[destinationOffset++] = '\\';
+                            var name = state.Reader.GetNameFromIndex(state.Reader._nodes[state.Nodes[index]].NameIndex);
+                            if (name != null)
+                            {
+                                name.AsSpan().CopyTo(destination[destinationOffset..]);
+                                destinationOffset += name.Length;
+                            }
+                        }
+                    }
+                );
+                return Interlocked.CompareExchange(ref _fullPathCache[nodeIndex], computedPath, null) ?? computedPath;
             }
-
-            var fullPath = new StringBuilder(prefix);
-            while (fullPathNodes.Count > 0)
+            finally
             {
-                node = fullPathNodes.Pop();
-                fullPath.Append('\\');
-                fullPath.Append(GetNameFromIndex(_nodes[node].NameIndex));
+                ArrayPool<uint>.Shared.Return(pathNodes);
             }
-
-            var computedPath = fullPath.ToString();
-            return Interlocked.CompareExchange(ref _fullPathCache[nodeIndex], computedPath, null) ?? computedPath;
         }
 
         private void BuildHierarchyIndexes()
@@ -156,8 +210,10 @@ namespace System.IO.Filesystem.Ntfs
 
         private bool TryResolveRootPath(string rootPath, out uint nodeIndex)
         {
-            var driveRoot = _driveInfo.Name.TrimEnd(trimChars);
-            var normalizedPath = rootPath.Replace('/', '\\').TrimEnd(trimChars);
+            var driveRoot = _driveRoot;
+            ReadOnlySpan<char> normalizedPath = rootPath.IndexOf('/') >= 0
+                ? rootPath.Replace('/', '\\').AsSpan().TrimEnd('\\')
+                : rootPath.AsSpan().TrimEnd('\\');
             if (!normalizedPath.StartsWith(driveRoot, StringComparison.OrdinalIgnoreCase) ||
                 (normalizedPath.Length > driveRoot.Length && normalizedPath[driveRoot.Length] != '\\'))
             {
@@ -166,11 +222,13 @@ namespace System.IO.Filesystem.Ntfs
             }
 
             nodeIndex = ROOT_DIRECTORY;
-            var relativePath = normalizedPath.AsSpan(driveRoot.Length).TrimStart('\\');
+            var relativePath = normalizedPath[driveRoot.Length..].TrimStart('\\');
             foreach (var segmentRange in relativePath.Split('\\'))
             {
                 var segment = relativePath[segmentRange];
-                if (segment.IsEmpty || !_childLookup.TryGetValue(new ChildKey(nodeIndex, segment.ToString()), out nodeIndex))
+                if (segment.IsEmpty ||
+                    !_childLookup.GetAlternateLookup<ChildPathKey>()
+                        .TryGetValue(new ChildPathKey(nodeIndex, segment), out nodeIndex))
                 {
                     nodeIndex = 0;
                     return false;

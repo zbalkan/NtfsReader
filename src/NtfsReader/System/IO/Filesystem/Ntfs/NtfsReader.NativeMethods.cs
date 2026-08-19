@@ -30,7 +30,6 @@
     Software Architect
 */
 
-using System.Text;
 using Microsoft.Win32.SafeHandles;
 
 namespace System.IO.Filesystem.Ntfs
@@ -71,8 +70,9 @@ namespace System.IO.Filesystem.Ntfs
         [LibraryImport("kernel32", StringMarshalling = StringMarshalling.Utf16, SetLastError = true)]
         private static partial SafeFileHandle CreateFile(string lpFileName, FileAccess fileAccess, FileShare fileShare, IntPtr lpSecurityAttributes, FileMode fileMode, int dwFlagsAndAttributes, IntPtr hTemplateFile);
 
-        [DllImport("kernel32", CharSet = CharSet.Auto, BestFitMapping = false, SetLastError = true)]
-        private static extern bool GetVolumeNameForVolumeMountPoint(string volumeName, StringBuilder uniqueVolumeName, int uniqueNameBufferCapacity);
+        [LibraryImport("kernel32", StringMarshalling = StringMarshalling.Utf16, SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static partial bool GetVolumeNameForVolumeMountPoint(string volumeName, Span<char> uniqueVolumeName);
 
         [LibraryImport("kernel32", SetLastError = true)]
         [return: MarshalAs(UnmanagedType.Bool)]
