@@ -211,7 +211,7 @@ namespace System.IO.Filesystem.Ntfs
         private bool TryResolveRootPath(string rootPath, out uint nodeIndex)
         {
             var driveRoot = _driveRoot;
-            ReadOnlySpan<char> normalizedPath = rootPath.IndexOf('/') >= 0
+            var normalizedPath = rootPath.Contains('/')
                 ? rootPath.Replace('/', '\\').AsSpan().TrimEnd('\\')
                 : rootPath.AsSpan().TrimEnd('\\');
             if (!normalizedPath.StartsWith(driveRoot, StringComparison.OrdinalIgnoreCase) ||

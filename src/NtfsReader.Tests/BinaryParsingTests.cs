@@ -60,7 +60,7 @@ public sealed class BinaryParsingTests
     [DataRow(9)]
     public void InvalidRunLengthWidthIsRejected(int width)
     {
-        byte[] bytes = new byte[9];
+        var bytes = new byte[9];
         var index = 0;
 
         Assert.ThrowsExactly<NtfsException>(() => Reader.ProcessRunLength(bytes, width, ref index));
@@ -94,7 +94,7 @@ public sealed class BinaryParsingTests
     [TestMethod]
     public void InvalidRunOffsetWidthIsRejectedWithoutAdvancingTheBufferIndex()
     {
-        byte[] bytes = new byte[9];
+        var bytes = new byte[9];
         var index = 0;
 
         Assert.ThrowsExactly<NtfsException>(() => Reader.ProcessRunOffset(bytes, 9, ref index));
@@ -175,7 +175,7 @@ public sealed class BinaryParsingTests
 
         Reader.FixupRawMftdata(record, 512);
 
-        CollectionAssert.AreEqual(expected, record);
+        Assert.AreSequenceEqual(expected, record);
     }
 
     [TestMethod]
@@ -184,10 +184,7 @@ public sealed class BinaryParsingTests
     [DataRow((byte)0x03, (byte)0x00, true)]
     [DataRow((byte)0x02, (byte)0x01, false)]
     [DataRow((byte)0x03, (byte)0x03, false)]
-    public void Win32CapableFilenameNamespaceIsPreferred(byte candidate, byte current, bool expected)
-    {
-        Assert.AreEqual(expected, Reader.IsPreferredFileName(candidate, current));
-    }
+    public void Win32CapableFilenameNamespaceIsPreferred(byte candidate, byte current, bool expected) => Assert.AreEqual(expected, Reader.IsPreferredFileName(candidate, current));
 
     [TestMethod]
     public void AggregateByFragmentsGroupsOnlyEligibleNodesByTheirPrimaryStream()
@@ -203,9 +200,9 @@ public sealed class BinaryParsingTests
             minimumFragments: 3
         );
 
-        Assert.AreEqual(1, aggregates.Count);
+        Assert.HasCount(1, aggregates);
         Assert.IsTrue(aggregates.TryGetValue(3, out var nodes));
-        CollectionAssert.AreEqual(new INode[] { first, second }, nodes);
+        Assert.AreSequenceEqual(new INode[] { first, second }, nodes);
     }
 
     [TestMethod]
@@ -222,11 +219,11 @@ public sealed class BinaryParsingTests
             minimumSize: 100
         );
 
-        Assert.AreEqual(2, aggregates.Count);
+        Assert.HasCount(2, aggregates);
         Assert.IsTrue(aggregates.TryGetValue(100, out var oneHundredByteNodes));
-        CollectionAssert.AreEqual(new INode[] { first, second }, oneHundredByteNodes);
+        Assert.AreSequenceEqual(new INode[] { first, second }, oneHundredByteNodes);
         Assert.IsTrue(aggregates.TryGetValue(200, out var twoHundredByteNodes));
-        CollectionAssert.AreEqual(new INode[] { larger }, twoHundredByteNodes);
+        Assert.AreSequenceEqual(new INode[] { larger }, twoHundredByteNodes);
     }
 
     private static byte[] CreateTwoSectorFileRecord(ushort usaOffset, ushort usaCount)

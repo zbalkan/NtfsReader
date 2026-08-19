@@ -365,9 +365,7 @@ namespace System.IO.Filesystem.Ntfs
 
             public Attributes Attributes => _node.Attributes;
 
-            public string FullName {
-                get => _reader.GetNodeFullNameCore(NodeIndex);
-            }
+            public string FullName => _reader.GetNodeFullNameCore(NodeIndex);
 
             public string? Name => _reader.GetNameFromIndex(_node.NameIndex);
             public uint NodeIndex { get; }

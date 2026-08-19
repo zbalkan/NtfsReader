@@ -1,4 +1,6 @@
+#pragma warning disable IDE0130 // Namespace does not match folder structure
 namespace System.IO.Filesystem.Ntfs
+#pragma warning restore IDE0130 // Namespace does not match folder structure
 {
     /// <summary>
     /// Controls how the raw volume handle is shared while NTFS metadata is scanned.
