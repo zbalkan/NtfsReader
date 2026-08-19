@@ -187,6 +187,53 @@ public sealed class BinaryParsingTests
     public void Win32CapableFilenameNamespaceIsPreferred(byte candidate, byte current, bool expected) => Assert.AreEqual(expected, Reader.IsPreferredFileName(candidate, current));
 
     [TestMethod]
+    [DataRow(@"\\?\GLOBALROOT\Device\HarddiskVolumeShadowCopy42", @"\\?\GLOBALROOT\Device\HarddiskVolumeShadowCopy42")]
+    [DataRow(@"\\?\GLOBALROOT\Device\HarddiskVolumeShadowCopy42\", @"\\?\GLOBALROOT\Device\HarddiskVolumeShadowCopy42")]
+    [DataRow(@"\\?\Volume{01234567-89AB-CDEF-0123-456789ABCDEF}\", @"\\?\Volume{01234567-89AB-CDEF-0123-456789ABCDEF}")]
+    [DataRow(@"\\.\C:", @"\\.\C:")]
+    public void VolumeDevicePathNormalizationAcceptsVssAndRawVolumePaths(string devicePath, string expected)
+    {
+        Assert.AreEqual(expected, Reader.NormalizeVolumeDevicePath(devicePath));
+    }
+
+    [TestMethod]
+    [DataRow("C:")]
+    [DataRow(@"C:\")]
+    [DataRow("relative-path")]
+    public void VolumeDevicePathNormalizationRejectsNonDevicePaths(string devicePath)
+    {
+        var exception = Assert.ThrowsExactly<ArgumentException>(() => Reader.NormalizeVolumeDevicePath(devicePath));
+
+        Assert.AreEqual("volumeDevicePath", exception.ParamName);
+    }
+
+    [TestMethod]
+    public void VolumeDevicePathNormalizationRejectsMissingPaths()
+    {
+        var nullException = Assert.ThrowsExactly<ArgumentNullException>(() => Reader.NormalizeVolumeDevicePath(null!));
+        var blankException = Assert.ThrowsExactly<ArgumentException>(() => Reader.NormalizeVolumeDevicePath("   "));
+
+        Assert.AreEqual("volumeDevicePath", nullException.ParamName);
+        Assert.AreEqual("volumeDevicePath", blankException.ParamName);
+    }
+
+    [TestMethod]
+    [DataRow(@"C:\", "C:")]
+    [DataRow(@"C:\\", "C:")]
+    [DataRow("logical-root\\", "logical-root")]
+    public void LogicalDriveRootNormalizationPreservesAStablePathPrefix(string root, string expected)
+    {
+        Assert.AreEqual(expected, Reader.NormalizeLogicalDriveRoot(root));
+    }
+
+    [TestMethod]
+    public void LogicalDriveRootNormalizationRejectsMissingRoots()
+    {
+        Assert.ThrowsExactly<ArgumentNullException>(() => Reader.NormalizeLogicalDriveRoot(null!));
+        Assert.ThrowsExactly<ArgumentException>(() => Reader.NormalizeLogicalDriveRoot("\\\\"));
+    }
+
+    [TestMethod]
     public void AggregateByFragmentsGroupsOnlyEligibleNodesByTheirPrimaryStream()
     {
         var first = CreateNode(fragmentCounts: [3, 8]);

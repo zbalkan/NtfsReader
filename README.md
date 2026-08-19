@@ -13,7 +13,7 @@ The original text at the end of this file describes a small `netstandard2.0`-ori
 | **Platform and project system** | The library and test project target `net10.0-windows10.0.17763.0`, use nullable reference types, and the library is marked AOT-compatible. The repository uses an SDK-style `.slnx` solution and .NET 10 automation. [1] [2] [3] [4] [6] |
 | **NTFS parsing correctness** | Binary parsing now uses checked span-based reads. The fork validates update-sequence-array bounds, handles sparse runs safely, resolves `$ATTRIBUTE_LIST` extension records, and applies the correct default-stream size semantics. [5] |
 | **Paths and hard links** | Path matching is deterministic and ordinal; duplicate children are detected; full paths are cached; and `GetNodePaths` exposes every path associated with hard-linked nodes. The retained `GetNodesParallel` API now provides deterministic compatibility behavior and is obsolete in favor of `GetNodes`. [6] |
-| **Volume access and diagnostics** | Callers can explicitly select volume-handle sharing behavior through `VolumeReadConsistency`. The raw-volume open path reports more useful Win32 diagnostics and the library no longer forces garbage collection in the host process. [6] |
+| **Volume access and diagnostics** | Callers can explicitly select volume-handle sharing behavior through `VolumeReadConsistency` or supply a Win32 raw-volume device path directly. This supports reading a VSS `SnapshotDeviceObject` without resolving the live drive. The raw-volume open path reports useful Win32 diagnostics and the library no longer forces garbage collection in the host process. [6] |
 | **Memory and traversal performance** | The fork reduces temporary allocations by using stack-backed spans for volume names, exact-length string creation for full paths, pooled traversal storage, cached drive roots, and span-based segment comparisons. [7] |
 | **Tests and continuous integration** | The repository includes an MSTest project with focused binary-parsing and compatibility coverage, plus a modernized .NET 10 workflow for build, test, and package publication. [6] [8] |
 
@@ -27,7 +27,7 @@ The original text at the end of this file describes a small `netstandard2.0`-ori
 | File system | An NTFS volume. |
 | SDK for development | .NET 10 SDK, matching the library and test project target framework. |
 | Permissions for volume scans | Run with Administrator privileges. The library opens the volume directly and will throw an `IOException` if it cannot do so. |
-| Consistency expectations | The reader does not create a point-in-time snapshot. Use a VSS snapshot when forensic or backup-grade consistency is required. |
+| Consistency expectations | The reader does not create or manage a point-in-time snapshot. Create a VSS snapshot with a requester, then pass its `SnapshotDeviceObject` to the device-path constructor when forensic or backup-grade consistency is required. [10] |
 
 ## Repository layout
 
@@ -109,6 +109,30 @@ The constructor's `consistency` argument controls the sharing mode requested whe
 
 For a VSS-backed workflow, create and scan the snapshot outside this library; passing `DenyConcurrentWrites` alone cannot provide point-in-time consistency.
 
+### Read a VSS snapshot
+
+`NtfsReader` does not create, retain, or delete a VSS snapshot. After a VSS requester has created one, pass its `SnapshotDeviceObject` to the device-path constructor rather than creating the reader from `new DriveInfo(@"C:\")`. Microsoft documents this device object as the root for the shadow-copied volume; it has no trailing backslash. [10]
+
+```csharp
+// snapshotProperties is returned by the VSS requester after snapshot creation.
+var reader = new NtfsReader(
+    snapshotProperties.SnapshotDeviceObject,
+    logicalDriveRoot: "C:",
+    retrieveMode: RetrieveMode.StandardInformations);
+
+foreach (INode node in reader.GetNodes(@"C:\Data"))
+{
+    Console.WriteLine($"{node.FullName} - {node.Size:N0} bytes");
+}
+```
+
+| Constructor argument | VSS usage |
+|---|---|
+| `volumeDevicePath` | Pass the VSS `SnapshotDeviceObject`, such as `\\?\GLOBALROOT\Device\HarddiskVolumeShadowCopy42`. Do not append a trailing backslash. |
+| `logicalDriveRoot` | Pass the source drive root, such as `C:`. The reader uses it for returned `INode.FullName` values and `GetNodes` query paths; it does not determine the raw source being read. |
+
+The reader performs its raw-volume reads while its constructor runs. Keep the VSS snapshot alive until construction completes, then complete and dispose the VSS requester according to its lifecycle. Do not resolve ordinary files, MFT data, or volume metadata from the live volume during a scan that you intend to represent the snapshot.
+
 ### Work with nodes and hard links
 
 Each `INode` exposes its full path, name, size, attributes, timestamps, streams (when requested), and MFT node indexes. When a node has hard links, `GetNodePaths` returns every path represented by its `$FILE_NAME` attributes:
@@ -138,6 +162,7 @@ The library is licensed under **LGPL-2.1-or-later**; see [LICENSE](LICENSE) for 
 [7]: https://github.com/zbalkan/NtfsReader/commit/9efac4b "Reduce raw-volume and traversal allocations"
 [8]: https://github.com/zbalkan/NtfsReader/commit/d9cd0cb "Add unit-test coverage"
 [9]: https://sourceforge.net/projects/ntfsreader/ "NtfsReader - SourceForge"
+[10]: https://learn.microsoft.com/en-us/windows/win32/vss/requestor-access-to-shadow-copied-data "Microsoft: Requestor Access to Shadow-Copied Data"
 
 ## Original README (verbatim)
 

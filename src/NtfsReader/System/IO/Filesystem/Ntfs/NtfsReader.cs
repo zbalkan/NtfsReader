@@ -525,7 +525,6 @@ namespace System.IO.Filesystem.Ntfs
         private const ulong VIRTUAL_FRAGMENT = 18446744073709551615; // _UI64_MAX - 1 */
         #endregion Constants
 
-        private readonly DriveInfo _driveInfo;
         private readonly string _driveRoot;
 
         // This index only lives while the MFT is being read. Do not eagerly reserve a

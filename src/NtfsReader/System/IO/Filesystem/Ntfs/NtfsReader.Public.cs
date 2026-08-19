@@ -48,32 +48,95 @@ namespace System.IO.Filesystem.Ntfs
         private static readonly char[] trimChars = ['\\'];
 
         /// <summary>
-        /// NtfsReader constructor.
+        /// Initializes the reader from a mounted live volume.
         /// </summary>
-        /// <param name="driveInfo">The drive you want to read metadata from.</param>
+        /// <param name="driveInfo">The drive whose metadata will be read.</param>
         /// <param name="retrieveMode">Information to retrieve from each node while scanning the disk. StandardInformation is the default.</param>
         /// <param name="consistency">
         /// Controls sharing of the raw volume handle. Neither option creates a point-in-time snapshot;
-        /// use a VSS snapshot for forensic or backup-grade consistency.
+        /// use the device-path overload with a VSS snapshot for forensic or backup-grade consistency.
         /// </param>
         /// <remarks>Streams & Fragments are expensive to store in memory, if you don't need them, don't retrieve them.</remarks>
         public NtfsReader(
             DriveInfo driveInfo,
             RetrieveMode retrieveMode = RetrieveMode.StandardInformations,
             VolumeReadConsistency consistency = VolumeReadConsistency.BestEffort)
+            : this(ResolveVolumeDevicePath(driveInfo), driveInfo?.Name ?? throw new ArgumentNullException(nameof(driveInfo)), retrieveMode, consistency)
         {
-            ArgumentNullException.ThrowIfNull(driveInfo);
+        }
+
+        /// <summary>
+        /// Initializes the reader from a raw volume device path.
+        /// </summary>
+        /// <param name="volumeDevicePath">
+        /// A Win32 volume-device path, such as a volume GUID path, <c>\\.\C:</c>, or a VSS
+        /// <c>SnapshotDeviceObject</c>. A VSS snapshot device path has no trailing backslash.
+        /// </param>
+        /// <param name="logicalDriveRoot">
+        /// The root used in returned node paths and query paths, for example <c>C:</c>. This is
+        /// independent of <paramref name="volumeDevicePath"/> so callers can preserve normal path
+        /// semantics while reading an immutable VSS snapshot.
+        /// </param>
+        /// <param name="retrieveMode">Information to retrieve from each node while scanning the disk. StandardInformation is the default.</param>
+        /// <param name="consistency">Controls sharing of the raw volume handle.</param>
+        public NtfsReader(
+            string volumeDevicePath,
+            string logicalDriveRoot,
+            RetrieveMode retrieveMode = RetrieveMode.StandardInformations,
+            VolumeReadConsistency consistency = VolumeReadConsistency.BestEffort)
+        {
             if (!Enum.IsDefined(consistency))
             {
                 throw new ArgumentOutOfRangeException(nameof(consistency));
             }
 
-            _driveInfo = driveInfo;
-            _driveRoot = _driveInfo.Name.AsSpan().TrimEnd('\\').ToString();
+            _driveRoot = NormalizeLogicalDriveRoot(logicalDriveRoot);
             _retrieveMode = retrieveMode;
 
+            var normalizedVolumeDevicePath = NormalizeVolumeDevicePath(volumeDevicePath);
+            var fileShare = consistency == VolumeReadConsistency.DenyConcurrentWrites
+                ? FileShare.Read
+                : FileShare.All;
+
+            _volumeHandle =
+                CreateFile(
+                    normalizedVolumeDevicePath,
+                    FileAccess.Read,
+                    fileShare,
+                    IntPtr.Zero,
+                    FileMode.Open,
+                    0,
+                    IntPtr.Zero
+                    );
+
+            if (_volumeHandle?.IsInvalid != false)
+            {
+                throw new IOException(
+                    $"Unable to open volume device '{normalizedVolumeDevicePath}'. " +
+                    $"Make sure it exists and that the process has Administrator or backup privileges. " +
+                    $"Win32 error: {Marshal.GetLastPInvokeError()}."
+                );
+            }
+
+            using (_volumeHandle)
+            {
+                _diskInfo = InitializeDiskInfo();
+                _nodes = ProcessMft();
+            }
+
+            BuildHierarchyIndexes();
+
+            // Cleanup state only used while reading the MFT. Do not force collection in the host process.
+            _nameIndex = null;
+            _volumeHandle = null;
+        }
+
+        private static string ResolveVolumeDevicePath(DriveInfo driveInfo)
+        {
+            ArgumentNullException.ThrowIfNull(driveInfo);
+
             Span<char> volumeNameBuffer = stackalloc char[1024];
-            if (!GetVolumeNameForVolumeMountPoint(_driveInfo.RootDirectory.Name, volumeNameBuffer))
+            if (!GetVolumeNameForVolumeMountPoint(driveInfo.RootDirectory.Name, volumeNameBuffer))
             {
                 throw new IOException(
                     $"Unable to resolve the volume name for {driveInfo}. Win32 error: {Marshal.GetLastPInvokeError()}."
@@ -86,48 +149,42 @@ namespace System.IO.Filesystem.Ntfs
                 throw new IOException($"The resolved volume name for {driveInfo} is empty or unterminated.");
             }
 
-            var volume = new string(
+            return new string(
                 volumeNameBuffer[..(volumeNameBuffer[volumeNameLength - 1] == '\\'
                     ? volumeNameLength - 1
                     : volumeNameLength)]
             );
-            var fileShare = consistency == VolumeReadConsistency.DenyConcurrentWrites
-                ? FileShare.Read
-                : FileShare.All;
+        }
 
-            _volumeHandle =
-                CreateFile(
-                    volume,
-                    FileAccess.Read,
-                    fileShare,
-                    IntPtr.Zero,
-                    FileMode.Open,
-                    0,
-                    IntPtr.Zero
-                    );
+        internal static string NormalizeVolumeDevicePath(string volumeDevicePath)
+        {
+            ArgumentException.ThrowIfNullOrWhiteSpace(volumeDevicePath);
 
-            if (_volumeHandle?.IsInvalid != false)
+            var normalized = volumeDevicePath.AsSpan().TrimEnd('\\').ToString();
+            if (normalized.Length == 0 ||
+                (!normalized.StartsWith(@"\\?\", StringComparison.Ordinal) &&
+                 !normalized.StartsWith(@"\\.\", StringComparison.Ordinal)))
             {
-                throw new IOException(
-                    string.Format(
-                        "Unable to open volume {0}. Make sure it exists and that you have Administrator privileges.",
-                        driveInfo
-                    )
+                throw new ArgumentException(
+                    "The volume device path must use the Win32 device namespace (for example \\\\?\\Volume{GUID}, \\\\.\\C:, or a VSS SnapshotDeviceObject).",
+                    nameof(volumeDevicePath)
                 );
             }
 
-            using (_volumeHandle)
-            {
-                _diskInfo = InitializeDiskInfo();
+            return normalized;
+        }
 
-                _nodes = ProcessMft();
+        internal static string NormalizeLogicalDriveRoot(string logicalDriveRoot)
+        {
+            ArgumentException.ThrowIfNullOrWhiteSpace(logicalDriveRoot);
+
+            var normalized = logicalDriveRoot.AsSpan().TrimEnd('\\').ToString();
+            if (normalized.Length == 0)
+            {
+                throw new ArgumentException("The logical drive root must contain at least one non-separator character.", nameof(logicalDriveRoot));
             }
 
-            BuildHierarchyIndexes();
-
-            // Cleanup state only used while reading the MFT. Do not force collection in the host process.
-            _nameIndex = null;
-            _volumeHandle = null;
+            return normalized;
         }
 
         public IDiskInfo DiskInfo => _diskInfo;
