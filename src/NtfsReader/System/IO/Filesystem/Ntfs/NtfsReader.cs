@@ -250,6 +250,8 @@ namespace System.IO.Filesystem.Ntfs
             public ulong Size;
         }
 
+        private readonly record struct FileNameLink(uint ParentNodeIndex, int NameIndex, byte NameType);
+
         private readonly record struct StreamKey(AttributeType Type, int NameIndex);
 
         private readonly record struct AttributeListReference(
@@ -541,10 +543,10 @@ namespace System.IO.Filesystem.Ntfs
         private Stream[][]? _streams;
         private SafeFileHandle? _volumeHandle;
         private string?[] _fullPathCache = [];
-        private readonly object _fullPathCacheLock = new();
         private uint[] _childOffsets = [];
         private uint[] _children = [];
         private Dictionary<ChildKey, uint> _childLookup = [];
+        private readonly Dictionary<uint, List<FileNameLink>> _fileNameLinks = [];
 
         #region Events
 
@@ -948,7 +950,7 @@ namespace System.IO.Filesystem.Ntfs
             switch (attribute.AttributeType)
             {
                 case AttributeType.AttributeFileName:
-                    ProcessFileNameAttribute(ref node, value);
+                    ProcessFileNameAttribute(ref node, nodeIndex, value);
                     break;
 
                 case AttributeType.AttributeStandardInformation:
@@ -1019,7 +1021,7 @@ namespace System.IO.Filesystem.Ntfs
             }
         }
 
-        private void ProcessFileNameAttribute(ref Node node, ReadOnlySpan<byte> value)
+        private void ProcessFileNameAttribute(ref Node node, uint nodeIndex, ReadOnlySpan<byte> value)
         {
             SliceChecked(value, 0, FileNameFixedValueSize, "The $FILE_NAME value");
             var parentNodeIndex = ReadUInt48LittleEndian(value, "The $FILE_NAME parent reference");
@@ -1032,12 +1034,46 @@ namespace System.IO.Filesystem.Ntfs
             var nameByteLength = CheckedUtf16ByteLength(nameLength, "The $FILE_NAME value");
             var nameBytes = SliceChecked(value, FileNameFixedValueSize, nameByteLength, "The $FILE_NAME name");
 
-            node.ParentNodeIndex = checked((uint)parentNodeIndex);
-            if (value[65] == 1 || node.NameIndex == 0)
+            var link = new FileNameLink(
+                checked((uint)parentNodeIndex),
+                GetNameIndex(MemoryMarshal.Cast<byte, char>(nameBytes)),
+                value[65]
+            );
+
+            if (node.NameIndex == 0)
             {
-                node.NameIndex = GetNameIndex(MemoryMarshal.Cast<byte, char>(nameBytes));
+                node.ParentNodeIndex = link.ParentNodeIndex;
+                node.NameIndex = link.NameIndex;
+                return;
+            }
+
+            var canonicalLink = new FileNameLink(node.ParentNodeIndex, node.NameIndex, 0);
+            var links = _fileNameLinks.GetValueOrDefault(nodeIndex);
+            if (links == null)
+            {
+                links = [canonicalLink];
+                _fileNameLinks.Add(nodeIndex, links);
+            }
+
+            var existingIndex = links.FindIndex(existing => existing.ParentNodeIndex == link.ParentNodeIndex);
+            if (existingIndex < 0)
+            {
+                links.Add(link);
+            }
+            else if (IsPreferredFileName(link.NameType, links[existingIndex].NameType))
+            {
+                links[existingIndex] = link;
+            }
+
+            if (IsPreferredFileName(link.NameType, canonicalLink.NameType))
+            {
+                node.ParentNodeIndex = link.ParentNodeIndex;
+                node.NameIndex = link.NameIndex;
             }
         }
+
+        internal static bool IsPreferredFileName(byte candidateNameType, byte currentNameType) =>
+            (candidateNameType & 0x01) != 0 && (currentNameType & 0x01) == 0;
 
         private void ProcessStandardInformationAttribute(ref Node node, uint nodeIndex, ReadOnlySpan<byte> value)
         {

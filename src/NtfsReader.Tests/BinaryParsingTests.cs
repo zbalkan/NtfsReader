@@ -4,7 +4,7 @@ using Reader = System.IO.Filesystem.Ntfs.NtfsReader;
 
 namespace NtfsReader.Tests;
 
-public sealed class BinaryParsingTests
+public sealed partial class BinaryParsingTests
 {
     [Fact]
     public void SparseRunUsesAZeroWidthOffsetWithoutReadingBeforeTheBuffer()
@@ -91,5 +91,17 @@ public sealed class BinaryParsingTests
         BinaryPrimitives.WriteUInt16LittleEndian(record.AsSpan(4), usaOffset);
         BinaryPrimitives.WriteUInt16LittleEndian(record.AsSpan(6), usaCount);
         return record;
+    }
+}
+
+public sealed partial class BinaryParsingTests
+{
+    [Theory]
+    [InlineData((byte)0x03, (byte)0x02, true)]
+    [InlineData((byte)0x01, (byte)0x02, true)]
+    [InlineData((byte)0x02, (byte)0x01, false)]
+    public void Win32CapableFilenameNamespaceIsPreferred(byte candidate, byte current, bool expected)
+    {
+        Assert.Equal(expected, Reader.IsPreferredFileName(candidate, current));
     }
 }

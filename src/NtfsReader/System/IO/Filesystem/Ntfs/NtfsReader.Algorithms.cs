@@ -30,6 +30,7 @@
 
 using System.Collections.Generic;
 using System.Text;
+using System.Threading;
 
 namespace System.IO.Filesystem.Ntfs
 {
@@ -43,15 +44,14 @@ namespace System.IO.Filesystem.Ntfs
 
             public bool Equals(ChildKey x, ChildKey y) =>
                 x.ParentNodeIndex == y.ParentNodeIndex &&
-                StringComparer.InvariantCultureIgnoreCase.Equals(x.Name, y.Name);
+                StringComparer.OrdinalIgnoreCase.Equals(x.Name, y.Name);
 
             public int GetHashCode(ChildKey obj) =>
-                HashCode.Combine(obj.ParentNodeIndex, StringComparer.InvariantCultureIgnoreCase.GetHashCode(obj.Name));
+                HashCode.Combine(obj.ParentNodeIndex, StringComparer.OrdinalIgnoreCase.GetHashCode(obj.Name));
         }
 
         /// <summary>
-        /// Recurse the node hierarchy and construct its entire name
-        /// stopping at the root directory.
+        /// Construct the full path while publishing immutable cache entries without serializing concurrent callers.
         /// </summary>
         private string GetNodeFullNameCore(uint nodeIndex)
         {
@@ -60,61 +60,56 @@ namespace System.IO.Filesystem.Ntfs
                 throw new InvalidDataException($"Node index {nodeIndex} is outside the MFT.");
             }
 
-            lock (_fullPathCacheLock)
+            var cachedPath = Volatile.Read(ref _fullPathCache[nodeIndex]);
+            if (cachedPath != null)
             {
-                if (_fullPathCache[nodeIndex] != null)
-                {
-                    return _fullPathCache[nodeIndex]!;
-                }
-
-                var node = nodeIndex;
-                var prefix = _driveInfo.Name.TrimEnd(trimChars);
-                var fullPathNodes = new Stack<uint>();
-                var visitedNodes = new HashSet<uint>();
-
-                while (true)
-                {
-                    if (_fullPathCache[node] != null)
-                    {
-                        prefix = _fullPathCache[node]!;
-                        break;
-                    }
-
-                    if (!visitedNodes.Add(node))
-                    {
-                        throw new InvalidDataException($"Detected a parent cycle while resolving node {nodeIndex}.");
-                    }
-
-                    fullPathNodes.Push(node);
-                    var parent = _nodes[node].ParentNodeIndex;
-
-                    //loop until we reach the root directory
-                    if (parent == ROOT_DIRECTORY)
-                    {
-                        break;
-                    }
-
-                    if (parent >= _nodes.Length)
-                    {
-                        throw new InvalidDataException($"Parent node index {parent} for node {node} is outside the MFT.");
-                    }
-
-                    node = parent;
-                }
-
-                var fullPath = new StringBuilder(prefix);
-
-                while (fullPathNodes.Count > 0)
-                {
-                    node = fullPathNodes.Pop();
-
-                    fullPath.Append('\\');
-                    fullPath.Append(GetNameFromIndex(_nodes[node].NameIndex));
-                    _fullPathCache[node] = fullPath.ToString();
-                }
-
-                return _fullPathCache[nodeIndex]!;
+                return cachedPath;
             }
+
+            var node = nodeIndex;
+            var prefix = _driveInfo.Name.TrimEnd(trimChars);
+            var fullPathNodes = new Stack<uint>();
+            var visitedNodes = new HashSet<uint>();
+
+            while (true)
+            {
+                cachedPath = Volatile.Read(ref _fullPathCache[node]);
+                if (cachedPath != null)
+                {
+                    prefix = cachedPath;
+                    break;
+                }
+
+                if (!visitedNodes.Add(node))
+                {
+                    throw new InvalidDataException($"Detected a parent cycle while resolving node {nodeIndex}.");
+                }
+
+                fullPathNodes.Push(node);
+                var parent = _nodes[node].ParentNodeIndex;
+                if (parent == ROOT_DIRECTORY)
+                {
+                    break;
+                }
+
+                if (parent >= _nodes.Length)
+                {
+                    throw new InvalidDataException($"Parent node index {parent} for node {node} is outside the MFT.");
+                }
+
+                node = parent;
+            }
+
+            var fullPath = new StringBuilder(prefix);
+            while (fullPathNodes.Count > 0)
+            {
+                node = fullPathNodes.Pop();
+                fullPath.Append('\\');
+                fullPath.Append(GetNameFromIndex(_nodes[node].NameIndex));
+            }
+
+            var computedPath = fullPath.ToString();
+            return Interlocked.CompareExchange(ref _fullPathCache[nodeIndex], computedPath, null) ?? computedPath;
         }
 
         private void BuildHierarchyIndexes()
@@ -131,14 +126,20 @@ namespace System.IO.Filesystem.Ntfs
                     continue;
                 }
 
-                childCounts[node.ParentNodeIndex]++;
-                _childLookup[new ChildKey(node.ParentNodeIndex, GetNameFromIndex(node.NameIndex)!)] = nodeIndex;
+                childCounts[node.ParentNodeIndex] = checked(childCounts[node.ParentNodeIndex] + 1);
+                var key = new ChildKey(node.ParentNodeIndex, GetNameFromIndex(node.NameIndex)!);
+                if (!_childLookup.TryAdd(key, nodeIndex))
+                {
+                    throw new InvalidDataException(
+                        $"The MFT contains duplicate child names for parent {node.ParentNodeIndex}: {key.Name}."
+                    );
+                }
             }
 
             _childOffsets = new uint[_nodes.Length + 1];
             for (var i = 0; i < childCounts.Length; i++)
             {
-                _childOffsets[i + 1] = _childOffsets[i] + childCounts[i];
+                _childOffsets[i + 1] = checked(_childOffsets[i] + childCounts[i]);
             }
 
             _children = new uint[_childOffsets[^1]];
@@ -157,7 +158,7 @@ namespace System.IO.Filesystem.Ntfs
         {
             var driveRoot = _driveInfo.Name.TrimEnd(trimChars);
             var normalizedPath = rootPath.Replace('/', '\\').TrimEnd(trimChars);
-            if (!normalizedPath.StartsWith(driveRoot, StringComparison.InvariantCultureIgnoreCase) ||
+            if (!normalizedPath.StartsWith(driveRoot, StringComparison.OrdinalIgnoreCase) ||
                 (normalizedPath.Length > driveRoot.Length && normalizedPath[driveRoot.Length] != '\\'))
             {
                 nodeIndex = 0;

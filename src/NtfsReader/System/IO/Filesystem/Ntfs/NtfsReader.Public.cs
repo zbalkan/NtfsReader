@@ -28,12 +28,10 @@
     Software Architect
 */
 
-using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
-using System.Linq;
+using System.Runtime.InteropServices;
 using System.Text;
-using System.Threading.Tasks;
 
 namespace System.IO.Filesystem.Ntfs
 {
@@ -54,25 +52,44 @@ namespace System.IO.Filesystem.Ntfs
         /// NtfsReader constructor.
         /// </summary>
         /// <param name="driveInfo">The drive you want to read metadata from.</param>
-        /// <param name="retrieveMode">Information to retrieve from each node while scanning the disk. StandardInformation is the default</param>
+        /// <param name="retrieveMode">Information to retrieve from each node while scanning the disk. StandardInformation is the default.</param>
+        /// <param name="consistency">
+        /// Controls sharing of the raw volume handle. Neither option creates a point-in-time snapshot;
+        /// use a VSS snapshot for forensic or backup-grade consistency.
+        /// </param>
         /// <remarks>Streams & Fragments are expensive to store in memory, if you don't need them, don't retrieve them.</remarks>
-        public NtfsReader(DriveInfo driveInfo, RetrieveMode retrieveMode = RetrieveMode.StandardInformations)
+        public NtfsReader(
+            DriveInfo driveInfo,
+            RetrieveMode retrieveMode = RetrieveMode.StandardInformations,
+            VolumeReadConsistency consistency = VolumeReadConsistency.BestEffort)
         {
             ArgumentNullException.ThrowIfNull(driveInfo);
+            if (!Enum.IsDefined(consistency))
+            {
+                throw new ArgumentOutOfRangeException(nameof(consistency));
+            }
 
             _driveInfo = driveInfo;
             _retrieveMode = retrieveMode;
 
             var builder = new StringBuilder(1024);
-            GetVolumeNameForVolumeMountPoint(_driveInfo.RootDirectory.Name, builder, builder.Capacity);
+            if (!GetVolumeNameForVolumeMountPoint(_driveInfo.RootDirectory.Name, builder, builder.Capacity))
+            {
+                throw new IOException(
+                    $"Unable to resolve the volume name for {driveInfo}. Win32 error: {Marshal.GetLastPInvokeError()}."
+                );
+            }
 
             var volume = builder.ToString().TrimEnd(trimChars);
+            var fileShare = consistency == VolumeReadConsistency.DenyConcurrentWrites
+                ? FileShare.Read
+                : FileShare.All;
 
             _volumeHandle =
                 CreateFile(
                     volume,
                     FileAccess.Read,
-                    FileShare.All,
+                    fileShare,
                     IntPtr.Zero,
                     FileMode.Open,
                     0,
@@ -98,16 +115,45 @@ namespace System.IO.Filesystem.Ntfs
 
             BuildHierarchyIndexes();
 
-            //cleanup anything that isn't used anymore
+            // Cleanup state only used while reading the MFT. Do not force collection in the host process.
             _nameIndex = null;
             _volumeHandle = null;
-
-            GC.Collect();
         }
 
         public IDiskInfo DiskInfo => _diskInfo;
 
         public byte[]? VolumeBitmap => _bitmapData;
+
+        /// <summary>
+        /// Gets every path recorded for an MFT node, including hard-link paths represented by
+        /// multiple <c>$FILE_NAME</c> attributes. The existing <see cref="INode.FullName"/>
+        /// remains the primary path selected during parsing.
+        /// </summary>
+        /// <param name="nodeIndex">The MFT node index.</param>
+        public IReadOnlyList<string> GetNodePaths(uint nodeIndex)
+        {
+            if (nodeIndex >= _nodes.Length)
+            {
+                throw new ArgumentOutOfRangeException(nameof(nodeIndex));
+            }
+
+            if (!_fileNameLinks.TryGetValue(nodeIndex, out var links))
+            {
+                return [GetNodeFullNameCore(nodeIndex)];
+            }
+
+            var paths = new string[links.Count];
+            for (var index = 0; index < links.Count; index++)
+            {
+                var link = links[index];
+                var parentPath = link.ParentNodeIndex == ROOT_DIRECTORY
+                    ? _driveInfo.Name.TrimEnd(trimChars)
+                    : GetNodeFullNameCore(link.ParentNodeIndex);
+                paths[index] = $"{parentPath}\\{GetNameFromIndex(link.NameIndex)}";
+            }
+
+            return Array.AsReadOnly(paths);
+        }
 
         /// <summary>
         /// Get all nodes under the specified rootPath.
@@ -146,41 +192,12 @@ namespace System.IO.Filesystem.Ntfs
         }
 
         /// <summary>
-        /// Get all nodes under the specified rootPath in parallel.
+        /// Gets all nodes under the specified root path. This compatibility API now preserves the
+        /// deterministic traversal order and avoids parallel scheduling overhead for lightweight wrappers.
         /// </summary>
-        /// <param name="rootPath">The rootPath must at least contains the drive and may include any number of subdirectories. Wildcards aren't supported.</param>
-        /// <exception cref="AggregateException"></exception>
-        public List<INode> GetNodesParallel(string rootPath)
-        {
-            ArgumentNullException.ThrowIfNull(rootPath);
-            var stopwatch = new Stopwatch();
-            stopwatch.Start();
-
-            if (!TryResolveRootPath(rootPath, out var rootNodeIndex))
-            {
-                return [];
-            }
-
-            var nodes = new ConcurrentBag<INode>();
-            var descendantIndexes = EnumerateSubtree(rootNodeIndex).ToArray();
-            _ = Parallel.For(0,
-                descendantIndexes.Length,
-                index => {
-                    var i = descendantIndexes[index];
-                    if (_nodes[i].NameIndex != 0)
-                    {
-                        nodes.Add(new NodeWrapper(this, i, _nodes[i]));
-                    }
-                });
-
-            stopwatch.Stop();
-
-            Trace.WriteLine(
-                $"{nodes.Count} node{(nodes.Count > 1 ? "s" : string.Empty)} have been retrieved in {(float)stopwatch.ElapsedTicks / TimeSpan.TicksPerMillisecond} ms"
-            );
-
-            return nodes.ToList();
-        }
+        /// <param name="rootPath">The root path must contain the drive and may include subdirectories. Wildcards are not supported.</param>
+        [Obsolete("GetNodesParallel no longer provides a performance benefit. Use GetNodes instead.")]
+        public List<INode> GetNodesParallel(string rootPath) => GetNodes(rootPath);
 
         #region IDisposable Members
 

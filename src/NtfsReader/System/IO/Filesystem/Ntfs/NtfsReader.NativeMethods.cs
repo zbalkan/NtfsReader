@@ -68,13 +68,13 @@ namespace System.IO.Filesystem.Ntfs
             All = Read | Write | Delete
         }
 
-        [LibraryImport("kernel32", StringMarshalling = StringMarshalling.Utf16)]
+        [LibraryImport("kernel32", StringMarshalling = StringMarshalling.Utf16, SetLastError = true)]
         private static partial SafeFileHandle CreateFile(string lpFileName, FileAccess fileAccess, FileShare fileShare, IntPtr lpSecurityAttributes, FileMode fileMode, int dwFlagsAndAttributes, IntPtr hTemplateFile);
 
-        [DllImport("kernel32", CharSet = CharSet.Auto, BestFitMapping = false)]
+        [DllImport("kernel32", CharSet = CharSet.Auto, BestFitMapping = false, SetLastError = true)]
         private static extern bool GetVolumeNameForVolumeMountPoint(string volumeName, StringBuilder uniqueVolumeName, int uniqueNameBufferCapacity);
 
-        [LibraryImport("kernel32")]
+        [LibraryImport("kernel32", SetLastError = true)]
         [return: MarshalAs(UnmanagedType.Bool)]
         private static partial bool ReadFile(SafeFileHandle hFile, IntPtr lpBuffer, uint nNumberOfBytesToRead, out uint lpNumberOfBytesRead, ref NativeOverlapped lpOverlapped);
 
