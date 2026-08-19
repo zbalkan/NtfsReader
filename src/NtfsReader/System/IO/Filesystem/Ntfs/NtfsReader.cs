@@ -31,6 +31,7 @@
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Numerics;
+using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Threading;
 using Microsoft.Win32.SafeHandles;
@@ -250,6 +251,14 @@ namespace System.IO.Filesystem.Ntfs
         }
 
         private readonly record struct StreamKey(AttributeType Type, int NameIndex);
+
+        private readonly record struct AttributeListReference(
+            AttributeType Type,
+            ulong LowestVcn,
+            uint FileRecordNumber,
+            ushort SequenceNumber,
+            ushort AttributeNumber
+        );
 
         private struct MftReadCursor
         {
@@ -619,16 +628,27 @@ namespace System.IO.Filesystem.Ntfs
 
         private unsafe void ReadFile(byte* buffer, ulong len, ulong absolutePosition)
         {
+            if (buffer == null)
+            {
+                throw new ArgumentNullException(nameof(buffer));
+            }
+
+            if (len > uint.MaxValue)
+            {
+                throw new NtfsException("A single raw-volume read cannot exceed UInt32.MaxValue bytes.");
+            }
+
+            var bytesToRead = checked((uint)len);
             var overlapped = new NativeOverlapped(absolutePosition);
 
-            if (!ReadFile(_volumeHandle!, (IntPtr)buffer, (uint)len, out var read, ref overlapped))
+            if (!ReadFile(_volumeHandle!, (IntPtr)buffer, bytesToRead, out var read, ref overlapped))
             {
                 throw new NtfsException("Unable to read volume information");
             }
 
-            if (read != (uint)len)
+            if (read != bytesToRead)
             {
-                throw new NtfsException("Unable to read volume information");
+                throw new NtfsException("Unable to read the requested volume data.");
             }
         }
 
@@ -637,89 +657,112 @@ namespace System.IO.Filesystem.Ntfs
         #region Ntfs Interpretor
 
         /// <summary>
-        /// Decode the RunLength value.
+        /// Decode the unsigned RunLength value.
         /// </summary>
-        private static unsafe long ProcessRunLength(byte* runData, uint runDataLength, int runLengthSize, ref uint index)
+        internal static ulong ProcessRunLength(ReadOnlySpan<byte> runData, int runLengthSize, ref int index)
         {
-            long runLength = 0;
-            var runLengthBytes = (byte*)&runLength;
-            for (var i = 0; i < runLengthSize; i++)
+            if ((uint)(runLengthSize - 1) >= sizeof(ulong))
             {
-                runLengthBytes[i] = runData[index];
-                if (++index >= runDataLength)
-                {
-                    throw new NtfsException("Datarun is longer than buffer, the MFT may be corrupt.");
-                }
+                throw new NtfsException("The data-run length width is invalid.");
             }
+
+            var encodedLength = SliceChecked(runData, index, runLengthSize, "The data-run length");
+            index += runLengthSize;
+
+            ulong runLength = 0;
+            for (var i = 0; i < encodedLength.Length; i++)
+            {
+                runLength |= (ulong)encodedLength[i] << (i * 8);
+            }
+
+            if (runLength == 0)
+            {
+                throw new NtfsException("A non-terminal data run cannot have a zero length.");
+            }
+
             return runLength;
         }
 
         /// <summary>
-        /// Decode the RunOffset value.
+        /// Decode the signed RunOffset value. A zero-width offset represents a sparse run.
         /// </summary>
-        private static unsafe long ProcessRunOffset(byte* runData, uint runDataLength, int runOffsetSize, ref uint index)
+        internal static long ProcessRunOffset(ReadOnlySpan<byte> runData, int runOffsetSize, ref int index)
         {
-            long runOffset = 0;
-            var runOffsetBytes = (byte*)&runOffset;
-
-            int i;
-            for (i = 0; i < runOffsetSize; i++)
+            if (runOffsetSize == 0)
             {
-                runOffsetBytes[i] = runData[index];
-                if (++index >= runDataLength)
-                {
-                    throw new NtfsException("Datarun is longer than buffer, the MFT may be corrupt.");
-                }
+                return 0;
             }
 
-            //process negative values
-            if (runOffsetBytes[i - 1] >= 0x80)
+            if (runOffsetSize > sizeof(long))
             {
-                while (i < 8)
-                {
-                    runOffsetBytes[i++] = 0xFF;
-                }
+                throw new NtfsException("The data-run offset width is invalid.");
+            }
+
+            var encodedOffset = SliceChecked(runData, index, runOffsetSize, "The data-run offset");
+            index += runOffsetSize;
+
+            long runOffset = 0;
+            for (var i = 0; i < encodedOffset.Length; i++)
+            {
+                runOffset |= (long)encodedOffset[i] << (i * 8);
+            }
+
+            if (runOffsetSize < sizeof(long) && (encodedOffset[^1] & 0x80) != 0)
+            {
+                runOffset |= -1L << (runOffsetSize * 8);
             }
 
             return runOffset;
         }
 
         /// <summary>
-        /// Used to check/adjust data before we begin to interpret it
+        /// Validate and apply the NTFS update sequence array before interpreting an MFT record.
         /// </summary>
-        private unsafe void FixupRawMftdata(byte* buffer, ulong len)
-        {
-            var ntfsFileRecordHeader = (FileRecordHeader*)buffer;
+        private void FixupRawMftdata(Span<byte> buffer) => FixupRawMftdata(buffer, _diskInfo.BytesPerSector);
 
-            if (ntfsFileRecordHeader->RecordHeader.Type != RecordType.File)
+        internal static void FixupRawMftdata(Span<byte> buffer, ushort bytesPerSector)
+        {
+            var fileRecordHeader = ReadStruct<FileRecordHeader>(buffer, "The MFT record header");
+            if (fileRecordHeader.RecordHeader.Type != RecordType.File)
             {
                 return;
             }
 
-            var wordBuffer = (ushort*)buffer;
-
-            var UpdateSequenceArray = (ushort*)(buffer + ntfsFileRecordHeader->RecordHeader.UsaOffset);
-            var increment = (uint)_diskInfo.BytesPerSector / sizeof(ushort);
-
-            var Index = increment - 1;
-
-            for (var i = 1; i < ntfsFileRecordHeader->RecordHeader.UsaCount; i++)
+            if (bytesPerSector < sizeof(ushort) || bytesPerSector % sizeof(ushort) != 0)
             {
-                /* Check if we are inside the buffer. */
-                if (Index * sizeof(ushort) >= len)
-                {
-                    throw new NtfsException("USA data indicates that data is missing, the MFT may be corrupt.");
-                }
+                throw new NtfsException("The NTFS bytes-per-sector value is invalid.");
+            }
 
-                // Check if the last 2 bytes of the sector contain the Update Sequence Number.
-                if (wordBuffer[Index] != UpdateSequenceArray[0])
+            if (buffer.Length % bytesPerSector != 0)
+            {
+                throw new NtfsException("The MFT record does not contain complete sectors.");
+            }
+
+            var sectorCount = buffer.Length / bytesPerSector;
+            var usaCount = fileRecordHeader.RecordHeader.UsaCount;
+            if (usaCount != sectorCount + 1)
+            {
+                throw new NtfsException("The MFT update sequence array count does not match the record sector count.");
+            }
+
+            var usaByteLength = checked(usaCount * sizeof(ushort));
+            var usa = SliceChecked(buffer, fileRecordHeader.RecordHeader.UsaOffset, usaByteLength, "The MFT update sequence array");
+            var updateSequenceNumber = ReadUInt16LittleEndian(usa, 0, "The MFT update sequence number");
+
+            for (var sectorIndex = 1; sectorIndex <= sectorCount; sectorIndex++)
+            {
+                var sectorTrailerOffset = checked((sectorIndex * bytesPerSector) - sizeof(ushort));
+                if (ReadUInt16LittleEndian(buffer, sectorTrailerOffset, "An MFT sector trailer") != updateSequenceNumber)
                 {
                     throw new NtfsException("USA fixup word is not equal to the Update Sequence Number, the MFT may be corrupt.");
                 }
 
-                /* Replace the last 2 bytes in the sector with the value from the Usa array. */
-                wordBuffer[Index] = UpdateSequenceArray[i];
-                Index += increment;
+                WriteUInt16LittleEndian(
+                    buffer,
+                    sectorTrailerOffset,
+                    ReadUInt16LittleEndian(usa, sectorIndex * sizeof(ushort), "An MFT update sequence array entry"),
+                    "An MFT sector trailer"
+                );
             }
         }
 
@@ -729,202 +772,309 @@ namespace System.IO.Filesystem.Ntfs
         private unsafe DiskInfoWrapper InitializeDiskInfo()
         {
             var volumeData = new byte[512];
-
             fixed (byte* ptr = volumeData)
             {
                 ReadFile(ptr, volumeData.Length, 0);
-
-                var bootSector = (BootSector*)ptr;
-
-                if (bootSector->Signature != DEFAULT_NTFS_BOOT_SIGNATURE)
-                {
-                    throw new NtfsException("This is not an NTFS disk.");
-                }
-
-                var diskInfo = new DiskInfoWrapper
-                {
-                    BytesPerSector = bootSector->BytesPerSector,
-                    SectorsPerCluster = bootSector->SectorsPerCluster,
-                    TotalSectors = bootSector->TotalSectors,
-                    MftStartLcn = bootSector->MftStartLcn,
-                    Mft2StartLcn = bootSector->Mft2StartLcn,
-                    ClustersPerMftRecord = bootSector->ClustersPerMftRecord,
-                    ClustersPerIndexRecord = bootSector->ClustersPerIndexRecord
-                };
-
-                if (bootSector->ClustersPerMftRecord >= 128)
-                {
-                    diskInfo.BytesPerMftRecord = ((ulong)1 << (byte)(256 - (byte)bootSector->ClustersPerMftRecord));
-                }
-                else
-                {
-                    diskInfo.BytesPerMftRecord = diskInfo.ClustersPerMftRecord * diskInfo.BytesPerSector * diskInfo.SectorsPerCluster;
-                }
-
-                diskInfo.BytesPerCluster = diskInfo.BytesPerSector * (ulong)diskInfo.SectorsPerCluster;
-
-                if (diskInfo.SectorsPerCluster > 0)
-                {
-                    diskInfo.TotalClusters = diskInfo.TotalSectors / diskInfo.SectorsPerCluster;
-                }
-
-                return diskInfo;
             }
+
+            var bootSector = ReadStruct<BootSector>(volumeData, "The NTFS boot sector");
+            if (bootSector.Signature != DEFAULT_NTFS_BOOT_SIGNATURE)
+            {
+                throw new NtfsException("This is not an NTFS disk.");
+            }
+
+            if (bootSector.BytesPerSector < 512 ||
+                !BitOperations.IsPow2(bootSector.BytesPerSector) ||
+                bootSector.SectorsPerCluster == 0 ||
+                !BitOperations.IsPow2(bootSector.SectorsPerCluster) ||
+                bootSector.TotalSectors == 0)
+            {
+                throw new NtfsException("The NTFS boot sector contains invalid geometry.");
+            }
+
+            var diskInfo = new DiskInfoWrapper
+            {
+                BytesPerSector = bootSector.BytesPerSector,
+                SectorsPerCluster = bootSector.SectorsPerCluster,
+                TotalSectors = bootSector.TotalSectors,
+                MftStartLcn = bootSector.MftStartLcn,
+                Mft2StartLcn = bootSector.Mft2StartLcn,
+                ClustersPerMftRecord = bootSector.ClustersPerMftRecord,
+                ClustersPerIndexRecord = bootSector.ClustersPerIndexRecord
+            };
+
+            diskInfo.BytesPerCluster = CheckedMultiply(
+                diskInfo.BytesPerSector,
+                diskInfo.SectorsPerCluster,
+                "The bytes-per-cluster value"
+            );
+
+            if (bootSector.ClustersPerMftRecord >= 128)
+            {
+                diskInfo.BytesPerMftRecord = 1UL << (256 - (byte)bootSector.ClustersPerMftRecord);
+            }
+            else
+            {
+                diskInfo.BytesPerMftRecord = CheckedMultiply(
+                    diskInfo.ClustersPerMftRecord,
+                    diskInfo.BytesPerCluster,
+                    "The bytes-per-MFT-record value"
+                );
+            }
+
+            if (diskInfo.BytesPerMftRecord < (ulong)Unsafe.SizeOf<FileRecordHeader>() ||
+                diskInfo.BytesPerMftRecord > MaximumMftRecordSize ||
+                diskInfo.BytesPerMftRecord % diskInfo.BytesPerSector != 0)
+            {
+                throw new NtfsException("The NTFS MFT record size is invalid.");
+            }
+
+            diskInfo.TotalClusters = diskInfo.TotalSectors / diskInfo.SectorsPerCluster;
+            if (diskInfo.MftStartLcn >= diskInfo.TotalClusters)
+            {
+                throw new NtfsException("The MFT start cluster lies outside the NTFS volume.");
+            }
+
+            return diskInfo;
         }
 
         /// <summary>
-        /// Process each attributes and gather information when necessary
+        /// Process validated attributes from a single MFT record.
         /// </summary>
-        private unsafe void ProcessAttributes(ref Node node, uint nodeIndex, byte* ptr, ulong BufLength, ushort instance, int depth, List<Stream>? streams, bool isMftNode)
+        private void ProcessAttributes(
+            ref Node node,
+            uint nodeIndex,
+            ReadOnlySpan<byte> attributes,
+            ushort instance,
+            List<Stream>? streams,
+            bool isMftNode,
+            List<AttributeListReference>? attributeListReferences = null,
+            AttributeType? expectedType = null)
         {
-            Attribute* attribute = null;
-            Dictionary<StreamKey, Stream>? streamIndex = null;
-            for (uint AttributeOffset = 0; AttributeOffset < BufLength; AttributeOffset += attribute->Length)
+            var attributeOffset = 0;
+            while (attributeOffset < attributes.Length)
             {
-                attribute = (Attribute*)(ptr + AttributeOffset);
-
-                // exit the loop if end-marker.
-                if ((AttributeOffset + 4 <= BufLength) &&
-                    (*(uint*)attribute == END_MARKER))
+                var remaining = attributes[attributeOffset..];
+                if (remaining.Length < sizeof(uint))
                 {
-                    break;
+                    throw new NtfsException("An MFT attribute is truncated before its type marker.");
                 }
 
-                //make sure we did read the data correctly
-                if ((AttributeOffset + 4 > BufLength) || attribute->Length < 3 ||
-                    (AttributeOffset + attribute->Length > BufLength))
+                if (ReadUInt32LittleEndian(remaining, 0, "The MFT attribute type") == END_MARKER)
                 {
-                    throw new NtfsException("Error: attribute in Inode %I64u is bigger than the data, the MFT may be corrupt.");
+                    return;
                 }
 
-                //attributes list needs to be processed at the end
-                if (attribute->AttributeType == AttributeType.AttributeAttributeList)
+                var attribute = ReadStruct<Attribute>(remaining, "The MFT attribute header");
+                if (attribute.Length < AttributeHeaderSize)
                 {
-                    continue;
+                    throw new NtfsException("An MFT attribute has an invalid length.");
                 }
 
-                /* If the Instance does not equal the AttributeNumber then ignore the attribute.
-                   This is used when an AttributeList is being processed and we only want a specific
-                   instance. */
-                if ((instance != 65535) && (instance != attribute->AttributeNumber))
+                var attributeLength = CheckedByteLength(attribute.Length, "The MFT attribute length");
+                var attributeData = SliceChecked(remaining, 0, attributeLength, "The MFT attribute");
+                attributeOffset = checked(attributeOffset + attributeLength);
+
+                if (attribute.Nonresident is not 0 and not 1)
                 {
-                    continue;
+                    throw new NtfsException("An MFT attribute has an invalid resident flag.");
                 }
 
-                if (attribute->Nonresident == 0)
-                {
-                    var residentAttribute = (ResidentAttribute*)attribute;
+                var attributeNameByteLength = CheckedUtf16ByteLength(attribute.NameLength, "The MFT attribute name");
+                var attributeNameBytes = attribute.NameLength == 0
+                    ? ReadOnlySpan<byte>.Empty
+                    : SliceChecked(attributeData, attribute.NameOffset, attributeNameByteLength, "The MFT attribute name");
+                var streamNameIndex = attribute.NameLength == 0
+                    ? 0
+                    : GetNameIndex(MemoryMarshal.Cast<byte, char>(attributeNameBytes));
 
-                    switch (attribute->AttributeType)
+                if (attribute.AttributeType == AttributeType.AttributeAttributeList)
+                {
+                    if (attributeListReferences != null)
                     {
-                        case AttributeType.AttributeFileName:
-                            var attributeFileName = (AttributeFileName*)(ptr + AttributeOffset + residentAttribute->ValueOffset);
-
-                            if (attributeFileName->ParentDirectory.InodeNumberHighPart > 0)
-                            {
-                                throw new NotSupportedException("48 bits inode are not supported to reduce memory footprint.");
-                            }
-
-                            node.ParentNodeIndex = attributeFileName->ParentDirectory.InodeNumberLowPart;
-
-                            if (attributeFileName->NameType == 1 || node.NameIndex == 0)
-                            {
-                                node.NameIndex = GetNameIndex(new ReadOnlySpan<char>(&attributeFileName->Name, attributeFileName->NameLength));
-                            }
-
-                            break;
-
-                        case AttributeType.AttributeStandardInformation:
-                            var attributeStandardInformation = (AttributeStandardInformation*)(ptr + AttributeOffset + residentAttribute->ValueOffset);
-
-                            node.Attributes |= (Attributes)attributeStandardInformation->FileAttributes;
-
-                            if ((_retrieveMode & RetrieveMode.StandardInformations) == RetrieveMode.StandardInformations)
-                            {
-                                _standardInformations![nodeIndex] =
-                                    new StandardInformation(
-                                        attributeStandardInformation->CreationTime,
-                                        attributeStandardInformation->FileChangeTime,
-                                        attributeStandardInformation->LastAccessTime
-                                    );
-                            }
-
-                            break;
-
-                        case AttributeType.AttributeData:
-                            node.Size = residentAttribute->ValueLength;
-                            break;
+                        CollectAttributeListReferences(attributeData, attribute, attributeListReferences);
                     }
+
+                    continue;
+                }
+
+                if (instance != ushort.MaxValue &&
+                    (instance != attribute.AttributeNumber || expectedType != attribute.AttributeType))
+                {
+                    continue;
+                }
+
+                if (attribute.Nonresident == 0)
+                {
+                    ProcessResidentAttribute(
+                        ref node,
+                        nodeIndex,
+                        attribute,
+                        attributeData,
+                        streamNameIndex,
+                        streams,
+                        isMftNode
+                    );
                 }
                 else
                 {
-                    var nonResidentAttribute = (NonResidentAttribute*)attribute;
-
-                    //save the length (number of bytes) of the data.
-                    if (attribute->AttributeType == AttributeType.AttributeData && node.Size == 0)
-                    {
-                        node.Size = nonResidentAttribute->DataSize;
-                    }
-
-                    if (streams != null)
-                    {
-                        //extract the stream name
-                        var streamNameIndex = 0;
-                        if (attribute->NameLength > 0)
-                        {
-                            streamNameIndex = GetNameIndex(new ReadOnlySpan<char>((char*)(ptr + AttributeOffset + attribute->NameOffset), attribute->NameLength));
-                        }
-
-                        //find or create the stream
-                        Stream? stream;
-                        if (streamIndex == null)
-                        {
-                            stream = SearchStream(streams, attribute->AttributeType, streamNameIndex);
-                            if (streams.Count >= 8)
-                            {
-                                streamIndex = new Dictionary<StreamKey, Stream>(streams.Count);
-                                foreach (var existingStream in streams)
-                                {
-                                    streamIndex[new StreamKey(existingStream.Type, existingStream.NameIndex)] = existingStream;
-                                }
-                            }
-                        }
-                        else
-                        {
-                            streamIndex.TryGetValue(new StreamKey(attribute->AttributeType, streamNameIndex), out stream);
-                        }
-
-                        if (stream == null)
-                        {
-                            stream = new Stream(streamNameIndex, attribute->AttributeType, nonResidentAttribute->DataSize);
-                            streams.Add(stream);
-                            streamIndex?.Add(new StreamKey(attribute->AttributeType, streamNameIndex), stream);
-                        }
-                        else if (stream.Size == 0)
-                        {
-                            stream.Size = nonResidentAttribute->DataSize;
-                        }
-
-                        //we need the fragment of the MFTNode so retrieve them this time
-                        //even if fragments aren't normally read
-                        if (isMftNode || (_retrieveMode & RetrieveMode.Fragments) == RetrieveMode.Fragments)
-                        {
-                            ProcessFragments(
-                                ref node,
-                                stream,
-                                ptr + AttributeOffset + nonResidentAttribute->RunArrayOffset,
-                                attribute->Length - nonResidentAttribute->RunArrayOffset,
-                                nonResidentAttribute->StartingVcn
-                            );
-                        }
-                    }
+                    ProcessNonResidentAttribute(
+                        ref node,
+                        attribute,
+                        attributeData,
+                        streamNameIndex,
+                        streams,
+                        isMftNode
+                    );
                 }
             }
 
-            if (streams?.Count > 0)
+            throw new NtfsException("The MFT attribute sequence is missing its end marker.");
+        }
+
+        private void ProcessResidentAttribute(
+            ref Node node,
+            uint nodeIndex,
+            Attribute attribute,
+            ReadOnlySpan<byte> attributeData,
+            int streamNameIndex,
+            List<Stream>? streams,
+            bool isMftNode)
+        {
+            var residentAttribute = ReadStruct<ResidentAttribute>(attributeData, "The resident MFT attribute header");
+            var valueLength = CheckedByteLength(residentAttribute.ValueLength, "The resident MFT attribute value length");
+            var value = SliceChecked(attributeData, residentAttribute.ValueOffset, valueLength, "The resident MFT attribute value");
+
+            switch (attribute.AttributeType)
             {
-                node.Size = streams[0].Size;
+                case AttributeType.AttributeFileName:
+                    ProcessFileNameAttribute(ref node, value);
+                    break;
+
+                case AttributeType.AttributeStandardInformation:
+                    ProcessStandardInformationAttribute(ref node, nodeIndex, value);
+                    break;
+
+                case AttributeType.AttributeData:
+                    if (streamNameIndex == 0)
+                    {
+                        node.Size = residentAttribute.ValueLength;
+                    }
+
+                    if (streams != null && (isMftNode || attribute.AttributeType == AttributeType.AttributeData))
+                    {
+                        _ = GetOrCreateStream(streams, attribute.AttributeType, streamNameIndex, residentAttribute.ValueLength);
+                    }
+
+                    break;
             }
+        }
+
+        private void ProcessNonResidentAttribute(
+            ref Node node,
+            Attribute attribute,
+            ReadOnlySpan<byte> attributeData,
+            int streamNameIndex,
+            List<Stream>? streams,
+            bool isMftNode)
+        {
+            if (attributeData.Length < NonResidentAttributeMinimumSize)
+            {
+                throw new NtfsException("The non-resident MFT attribute header is truncated.");
+            }
+
+            var nonResidentAttribute = ReadStruct<NonResidentAttribute>(attributeData, "The non-resident MFT attribute header");
+            if (nonResidentAttribute.LastVcn < nonResidentAttribute.StartingVcn)
+            {
+                throw new NtfsException("The non-resident MFT attribute has an invalid VCN range.");
+            }
+
+            var runData = SliceChecked(
+                attributeData,
+                nonResidentAttribute.RunArrayOffset,
+                attributeData.Length - nonResidentAttribute.RunArrayOffset,
+                "The non-resident MFT data-run array"
+            );
+
+            if (attribute.AttributeType == AttributeType.AttributeData && streamNameIndex == 0)
+            {
+                node.Size = nonResidentAttribute.DataSize;
+            }
+
+            if (streams == null || (!isMftNode && attribute.AttributeType != AttributeType.AttributeData))
+            {
+                return;
+            }
+
+            var stream = GetOrCreateStream(
+                streams,
+                attribute.AttributeType,
+                streamNameIndex,
+                nonResidentAttribute.DataSize
+            );
+
+            if (isMftNode || (_retrieveMode & RetrieveMode.Fragments) == RetrieveMode.Fragments)
+            {
+                ProcessFragments(stream, runData, nonResidentAttribute.StartingVcn);
+            }
+        }
+
+        private void ProcessFileNameAttribute(ref Node node, ReadOnlySpan<byte> value)
+        {
+            SliceChecked(value, 0, FileNameFixedValueSize, "The $FILE_NAME value");
+            var parentNodeIndex = ReadUInt48LittleEndian(value, "The $FILE_NAME parent reference");
+            if (parentNodeIndex > uint.MaxValue)
+            {
+                throw new NotSupportedException("48-bit MFT references are not supported by the current node model.");
+            }
+
+            var nameLength = value[64];
+            var nameByteLength = CheckedUtf16ByteLength(nameLength, "The $FILE_NAME value");
+            var nameBytes = SliceChecked(value, FileNameFixedValueSize, nameByteLength, "The $FILE_NAME name");
+
+            node.ParentNodeIndex = checked((uint)parentNodeIndex);
+            if (value[65] == 1 || node.NameIndex == 0)
+            {
+                node.NameIndex = GetNameIndex(MemoryMarshal.Cast<byte, char>(nameBytes));
+            }
+        }
+
+        private void ProcessStandardInformationAttribute(ref Node node, uint nodeIndex, ReadOnlySpan<byte> value)
+        {
+            SliceChecked(value, 0, 36, "The $STANDARD_INFORMATION value");
+            node.Attributes |= (Attributes)ReadUInt32LittleEndian(value, 32, "The $STANDARD_INFORMATION file attributes");
+
+            if ((_retrieveMode & RetrieveMode.StandardInformations) == RetrieveMode.StandardInformations)
+            {
+                _standardInformations![nodeIndex] = new StandardInformation(
+                    ReadUInt64LittleEndian(value, 0, "The $STANDARD_INFORMATION creation time"),
+                    ReadUInt64LittleEndian(value, 24, "The $STANDARD_INFORMATION last access time"),
+                    ReadUInt64LittleEndian(value, 8, "The $STANDARD_INFORMATION last change time")
+                );
+            }
+        }
+
+        private static Stream GetOrCreateStream(
+            List<Stream> streams,
+            AttributeType streamType,
+            int streamNameIndex,
+            ulong size)
+        {
+            var stream = streams.Find(existing =>
+                existing.Type == streamType && existing.NameIndex == streamNameIndex
+            );
+
+            if (stream == null)
+            {
+                stream = new Stream(streamNameIndex, streamType, size);
+                streams.Add(stream);
+            }
+            else if (stream.Size == 0)
+            {
+                stream.Size = size;
+            }
+
+            return stream;
         }
 
         /// <summary>
@@ -974,62 +1124,60 @@ namespace System.IO.Filesystem.Ntfs
         }
 
         /// <summary>
-        /// Process fragments for streams
+        /// Process validated data runs and record their physical or sparse fragments.
         /// </summary>
-        private unsafe void ProcessFragments(
-            ref Node node,
+        private static void ProcessFragments(
             Stream stream,
-            byte* runData,
-            uint runDataLength,
-            ulong StartingVcn)
+            ReadOnlySpan<byte> runData,
+            ulong startingVcn)
         {
-            if (runData == null)
+            var index = 0;
+            var lcn = 0L;
+            var vcn = startingVcn;
+            var sawTerminator = false;
+
+            while (index < runData.Length)
             {
-                return;
+                var header = runData[index++];
+                if (header == 0)
+                {
+                    sawTerminator = true;
+                    break;
+                }
+
+                var runLengthSize = header & 0x0F;
+                var runOffsetSize = header >> 4;
+                var runLength = ProcessRunLength(runData, runLengthSize, ref index);
+                var runOffset = ProcessRunOffset(runData, runOffsetSize, ref index);
+
+                try
+                {
+                    vcn = checked(vcn + runLength);
+                    if (runOffset != 0)
+                    {
+                        lcn = checked(lcn + runOffset);
+                        if (lcn < 0)
+                        {
+                            throw new NtfsException("A data-run resolves to a negative logical cluster number.");
+                        }
+
+                        stream.Clusters = checked(stream.Clusters + runLength);
+                    }
+                }
+                catch (OverflowException exception)
+                {
+                    throw new NtfsException("A data-run exceeds the supported NTFS address range.", exception);
+                }
+
+                stream.Fragments.Add(new Fragment(
+                    runOffset == 0 ? VIRTUAL_FRAGMENT : checked((ulong)lcn),
+                    vcn
+                ));
             }
 
-            /* Walk through the RunData and add the extents. */
-            uint index = 0;
-            long lcn = 0;
-            var vcn = (long)StartingVcn;
-            var runOffsetSize = 0;
-            var runLengthSize = 0;
-
-            while (runData[index] != 0)
+            if (!sawTerminator)
             {
-                /* Decode the RunData and calculate the next Lcn. */
-                runLengthSize = (runData[index] & 0x0F);
-                runOffsetSize = ((runData[index] & 0xF0) >> 4);
-
-                if (++index >= runDataLength)
-                {
-                    throw new NtfsException("Error: datarun is longer than buffer, the MFT may be corrupt.");
-                }
-
-                var runLength =
-                    ProcessRunLength(runData, runDataLength, runLengthSize, ref index);
-
-                var runOffset =
-                    ProcessRunOffset(runData, runDataLength, runOffsetSize, ref index);
-
-                lcn += runOffset;
-                vcn += runLength;
-
-                /* Add the size of the fragment to the total number of clusters.
-                   There are two kinds of fragments: real and virtual. The latter do not
-                   occupy clusters on disk, but are information used by compressed
-                   and sparse files. */
-                if (runOffset != 0)
-                {
-                    stream.Clusters += (ulong)runLength;
-                }
-
-                stream.Fragments.Add(
-                    new Fragment(
-                        runOffset == 0 ? VIRTUAL_FRAGMENT : (ulong)lcn,
-                        (ulong)vcn
-                    )
-                );
+                throw new NtfsException("The data-run array is not terminated within the attribute.");
             }
         }
 
@@ -1038,43 +1186,66 @@ namespace System.IO.Filesystem.Ntfs
         /// </summary>
         private unsafe Node[] ProcessMft()
         {
-            //64 KB seems to be optimal for Windows XP, Vista is happier with 256KB...
-            var bufferSize =
-                (Environment.OSVersion.Version.Major >= 6 ? 256u : 64u) * 1024;
+            // 64 KB was optimal for Windows XP; newer systems are happier with 256 KB.
+            var bufferSize = (Environment.OSVersion.Version.Major >= 6 ? 256u : 64u) * 1024;
+            var recordLength = CheckedByteLength(_diskInfo.BytesPerMftRecord, "The MFT record size");
+            if (recordLength > bufferSize)
+            {
+                throw new NtfsException("The MFT record is larger than the scan buffer.");
+            }
 
             var data = new byte[bufferSize];
-
             fixed (byte* buffer = data)
             {
-                //Read the $MFT record from disk into memory, which is always the first record in the MFT.
-                ReadFile(buffer, _diskInfo.BytesPerMftRecord, _diskInfo.MftStartLcn * _diskInfo.BytesPerSector * _diskInfo.SectorsPerCluster);
+                // Read the $MFT record, which is always the first MFT record.
+                ReadFile(
+                    buffer,
+                    _diskInfo.BytesPerMftRecord,
+                    CheckedMultiply(_diskInfo.MftStartLcn, _diskInfo.BytesPerCluster, "The MFT byte offset")
+                );
 
-                //Fixup the raw data from disk. This will also test if it's a valid $MFT record.
-                FixupRawMftdata(buffer, _diskInfo.BytesPerMftRecord);
+                var mftRecord = data.AsSpan(0, recordLength);
+                FixupRawMftdata(mftRecord);
 
                 var mftStreams = new List<Stream>();
-
                 if ((_retrieveMode & RetrieveMode.StandardInformations) == RetrieveMode.StandardInformations)
                 {
-                    _standardInformations = new StandardInformation[1]; //allocate some space for $MFT record
+                    _standardInformations = new StandardInformation[1];
                 }
 
-                if (!ProcessMftRecord(buffer, _diskInfo.BytesPerMftRecord, 0, out var mftNode, mftStreams, true))
+                if (!ProcessMftRecord(mftRecord, 0, out var mftNode, mftStreams, true, out var mftAttributeListReferences))
                 {
-                    throw new NtfsException("Can't interpret Mft Record");
+                    throw new NtfsException("Cannot interpret the $MFT record.");
                 }
 
-                //the bitmap data contains all used inodes on the disk
-                _bitmapData =
-                    ProcessBitmapData(mftStreams);
+                var dataStream = SearchStream(mftStreams, AttributeType.AttributeData) ??
+                    throw new NtfsException("The $MFT data stream is missing.");
+                ResolveAttributeListReferences(
+                    ref mftNode,
+                    0,
+                    mftAttributeListReferences,
+                    mftStreams,
+                    true,
+                    dataStream
+                );
 
+                _bitmapData = ProcessBitmapData(mftStreams);
                 OnBitmapDataAvailable();
-
-                var dataStream = SearchStream(mftStreams, AttributeType.AttributeData) ?? throw new NtfsException("MFT stream cannot be null");
-                var maxInode = (uint)_bitmapData.Length * 8;
-                if (maxInode > (uint)(dataStream.Size / _diskInfo.BytesPerMftRecord))
+                var maxInode = checked((uint)_bitmapData.Length * 8);
+                var recordCount = dataStream.Size / _diskInfo.BytesPerMftRecord;
+                if (recordCount > uint.MaxValue)
                 {
-                    maxInode = (uint)(dataStream.Size / _diskInfo.BytesPerMftRecord);
+                    throw new NtfsException("The MFT contains more records than this reader can index.");
+                }
+
+                if (maxInode > (uint)recordCount)
+                {
+                    maxInode = (uint)recordCount;
+                }
+
+                if (maxInode == 0)
+                {
+                    throw new NtfsException("The MFT does not contain its required first record.");
                 }
 
                 var nodes = new Node[maxInode];
@@ -1092,16 +1263,12 @@ namespace System.IO.Filesystem.Ntfs
                     _streams = new Stream[maxInode][];
                 }
 
-                /* Read and process all the records in the MFT. The records are read into a
-                   buffer and then given one by one to the InterpretMftRecord() subroutine. */
-
-                ulong BlockStart = 0, BlockEnd = 0;
+                ulong blockStart = 0;
+                ulong blockEnd = 0;
                 var readCursor = new MftReadCursor();
-
-                var stopwatch = new Stopwatch();
-                stopwatch.Start();
-
+                var stopwatch = Stopwatch.StartNew();
                 ulong totalBytesRead = 0;
+
                 foreach (var nodeIndex in EnumerateOccupiedNodes(_bitmapData, maxInode))
                 {
                     if (nodeIndex == 0)
@@ -1109,27 +1276,33 @@ namespace System.IO.Filesystem.Ntfs
                         continue;
                     }
 
-                    if (nodeIndex >= BlockEnd)
+                    if (nodeIndex >= blockEnd)
                     {
                         if (!ReadNextChunk(
                                 buffer,
                                 bufferSize,
                                 nodeIndex,
                                 dataStream,
-                                ref BlockStart,
-                                ref BlockEnd,
+                                ref blockStart,
+                                ref blockEnd,
                                 ref readCursor))
                         {
                             break;
                         }
 
-                        totalBytesRead += (BlockEnd - BlockStart) * _diskInfo.BytesPerMftRecord;
+                        totalBytesRead = CheckedAdd(
+                            totalBytesRead,
+                            CheckedMultiply(blockEnd - blockStart, _diskInfo.BytesPerMftRecord, "The MFT chunk length"),
+                            "The total MFT bytes read"
+                        );
                     }
 
-                    FixupRawMftdata(
-                            buffer + ((nodeIndex - BlockStart) * _diskInfo.BytesPerMftRecord),
-                            _diskInfo.BytesPerMftRecord
-                        );
+                    var recordOffset = CheckedByteLength(
+                        CheckedMultiply(nodeIndex - blockStart, _diskInfo.BytesPerMftRecord, "The MFT record buffer offset"),
+                        "The MFT record buffer offset"
+                    );
+                    var record = data.AsSpan(recordOffset, recordLength);
+                    FixupRawMftdata(record);
 
                     List<Stream>? streams = null;
                     if ((_retrieveMode & RetrieveMode.Streams) == RetrieveMode.Streams)
@@ -1137,19 +1310,20 @@ namespace System.IO.Filesystem.Ntfs
                         streams = [];
                     }
 
-                    if (!ProcessMftRecord(
-                            buffer + ((nodeIndex - BlockStart) * _diskInfo.BytesPerMftRecord),
-                            _diskInfo.BytesPerMftRecord,
-                            nodeIndex,
-                            out var newNode,
-                            streams,
-                            false))
+                    if (!ProcessMftRecord(record, nodeIndex, out var newNode, streams, false, out var attributeListReferences))
                     {
                         continue;
                     }
 
+                    ResolveAttributeListReferences(
+                        ref newNode,
+                        nodeIndex,
+                        attributeListReferences,
+                        streams,
+                        false,
+                        dataStream
+                    );
                     nodes[nodeIndex] = newNode;
-
                     if (streams != null)
                     {
                         _streams![nodeIndex] = streams.ToArray();
@@ -1157,172 +1331,165 @@ namespace System.IO.Filesystem.Ntfs
                 }
 
                 stopwatch.Stop();
-
-                Trace.WriteLine(
-                    string.Format(
-                        "{0:F3} MB of volume metadata has been read in {1:F3} s at {2:F3} MB/s",
-                        (float)totalBytesRead / (1024 * 1024),
-                        (float)stopwatch.Elapsed.TotalSeconds,
-                        (float)totalBytesRead / (1024 * 1024) / stopwatch.Elapsed.TotalSeconds
-                    )
-                );
+                if (stopwatch.Elapsed.TotalSeconds > 0)
+                {
+                    Trace.WriteLine(
+                        $"{totalBytesRead / (1024d * 1024):F3} MB of volume metadata has been read in " +
+                        $"{stopwatch.Elapsed.TotalSeconds:F3} s at " +
+                        $"{totalBytesRead / (1024d * 1024) / stopwatch.Elapsed.TotalSeconds:F3} MB/s"
+                    );
+                }
 
                 return nodes;
             }
         }
 
         /// <summary>
-        /// Process an actual MFT record from the buffer
+        /// Process an actual MFT record from a bounded, already-fixup-applied buffer.
         /// </summary>
-        private unsafe bool ProcessMftRecord(byte* buffer, ulong length, uint nodeIndex, out Node node, List<Stream>? streams, bool isMftNode)
+        private bool ProcessMftRecord(
+            ReadOnlySpan<byte> record,
+            uint nodeIndex,
+            out Node node,
+            List<Stream>? streams,
+            bool isMftNode,
+            out List<AttributeListReference> attributeListReferences)
         {
-            node = new Node();
-
-            var ntfsFileRecordHeader = (FileRecordHeader*)buffer;
-
-            if (ntfsFileRecordHeader->RecordHeader.Type != RecordType.File)
+            node = default;
+            attributeListReferences = [];
+            var fileRecordHeader = ReadStruct<FileRecordHeader>(record, "The MFT record header");
+            if (fileRecordHeader.RecordHeader.Type != RecordType.File || (fileRecordHeader.Flags & 1) == 0)
             {
                 return false;
             }
 
-            //the inode is not in use
-            if ((ntfsFileRecordHeader->Flags & 1) != 1)
-            {
-                return false;
-            }
-
-            var baseInode = ((ulong)ntfsFileRecordHeader->BaseFileRecord.InodeNumberHighPart << 32) + ntfsFileRecordHeader->BaseFileRecord.InodeNumberLowPart;
-
-            //This is an inode extension used in an AttributeAttributeList of another inode, don't parse it
+            var baseInode = ((ulong)fileRecordHeader.BaseFileRecord.InodeNumberHighPart << 32) +
+                fileRecordHeader.BaseFileRecord.InodeNumberLowPart;
             if (baseInode != 0)
             {
                 return false;
             }
 
-            if (ntfsFileRecordHeader->AttributeOffset >= length)
+            if (fileRecordHeader.BytesInUse < Unsafe.SizeOf<FileRecordHeader>() ||
+                fileRecordHeader.BytesInUse > record.Length ||
+                fileRecordHeader.AttributeOffset >= fileRecordHeader.BytesInUse)
             {
-                throw new NtfsException("Error: attributes in Inode %I64u are outside the FILE record, the MFT may be corrupt.");
+                throw new NtfsException("The MFT record declares an invalid attribute area.");
             }
 
-            if (ntfsFileRecordHeader->BytesInUse > length)
-            {
-                throw new NtfsException("Error: in Inode %I64u the record is bigger than the size of the buffer, the MFT may be corrupt.");
-            }
-
-            //make the file appear in the rootdirectory by default
             node.ParentNodeIndex = ROOT_DIRECTORY;
-
-            if ((ntfsFileRecordHeader->Flags & 2) == 2)
+            if ((fileRecordHeader.Flags & 2) != 0)
             {
                 node.Attributes |= Attributes.Directory;
             }
 
-            ProcessAttributes(ref node, nodeIndex, buffer + ntfsFileRecordHeader->AttributeOffset, length - ntfsFileRecordHeader->AttributeOffset, 65535, 0, streams, isMftNode);
-
+            var attributes = SliceChecked(
+                record,
+                fileRecordHeader.AttributeOffset,
+                checked((int)fileRecordHeader.BytesInUse - fileRecordHeader.AttributeOffset),
+                "The MFT attribute area"
+            );
+            ProcessAttributes(
+                ref node,
+                nodeIndex,
+                attributes,
+                ushort.MaxValue,
+                streams,
+                isMftNode,
+                attributeListReferences
+            );
             return true;
         }
 
         /// <summary>
-        /// Read the data that is specified in a RunData list from disk into memory,
-        /// skipping the first Offset bytes.
+        /// Read non-resident data described by a validated data-run array. Sparse regions are retained as zero-filled bytes.
         /// </summary>
         private unsafe byte[] ProcessNonResidentData(
-            byte* RunData,
-            uint RunDataLength,
-            ulong Offset,         /* Bytes to skip from begin of data. */
-            ulong WantedLength    /* Number of bytes to read. */
-            )
+            ReadOnlySpan<byte> runData,
+            ulong offset,
+            ulong wantedLength)
         {
-            /* Sanity check. */
-            if (RunData == null || RunDataLength == 0)
+            if (runData.IsEmpty)
             {
-                throw new NtfsException("nothing to read");
+                throw new NtfsException("The non-resident data-run array is empty.");
             }
 
-            if (WantedLength >= uint.MaxValue)
+            if (wantedLength == 0)
             {
-                throw new NtfsException("too many bytes to read");
+                return [];
             }
 
-            /* We have to round up the WantedLength to the nearest sector. For some
-               reason or other Microsoft has decided that raw reading from disk can
-               only be done by whole sector, even though ReadFile() accepts it's
-               parameters in bytes. */
-            if (WantedLength % _diskInfo.BytesPerSector > 0)
+            var bytesPerSector = (ulong)_diskInfo.BytesPerSector;
+            var roundedLength = CheckedAdd(
+                wantedLength,
+                (bytesPerSector - (wantedLength % bytesPerSector)) % bytesPerSector,
+                "The rounded non-resident read length"
+            );
+            var buffer = new byte[CheckedByteLength(roundedLength, "The non-resident read length")];
+            var requestedEnd = CheckedAdd(offset, roundedLength, "The non-resident read range");
+            var bytesPerCluster = _diskInfo.BytesPerCluster;
+            var index = 0;
+            var lcn = 0L;
+            ulong vcn = 0;
+            var sawTerminator = false;
+
+            fixed (byte* bufferPointer = buffer)
             {
-                WantedLength += _diskInfo.BytesPerSector - (WantedLength % _diskInfo.BytesPerSector);
-            }
-
-            /* Walk through the RunData and read the requested data from disk. */
-            uint Index = 0;
-            long Lcn = 0;
-            long Vcn = 0;
-
-            var buffer = new byte[WantedLength];
-
-            fixed (byte* bufPtr = buffer)
-            {
-                while (RunData[Index] != 0)
+                while (index < runData.Length)
                 {
-                    /* Decode the RunData and calculate the next Lcn. */
-                    var RunLengthSize = (RunData[Index] & 0x0F);
-                    var RunOffsetSize = ((RunData[Index] & 0xF0) >> 4);
-
-                    if (++Index >= RunDataLength)
+                    var header = runData[index++];
+                    if (header == 0)
                     {
-                        throw new NtfsException("Error: datarun is longer than buffer, the MFT may be corrupt.");
+                        sawTerminator = true;
+                        break;
                     }
 
-                    var RunLength =
-                        ProcessRunLength(RunData, RunDataLength, RunLengthSize, ref Index);
+                    var runLength = ProcessRunLength(runData, header & 0x0F, ref index);
+                    var runOffset = ProcessRunOffset(runData, header >> 4, ref index);
+                    var extentOffset = CheckedMultiply(vcn, bytesPerCluster, "The non-resident extent offset");
+                    var extentLength = CheckedMultiply(runLength, bytesPerCluster, "The non-resident extent length");
+                    var extentEnd = CheckedAdd(extentOffset, extentLength, "The non-resident extent end");
+                    vcn = checked(vcn + runLength);
 
-                    var RunOffset =
-                        ProcessRunOffset(RunData, RunDataLength, RunOffsetSize, ref Index);
-
-                    // Ignore virtual extents.
-                    if (RunOffset == 0 || RunLength == 0)
+                    if (runOffset != 0)
                     {
-                        continue;
+                        try
+                        {
+                            lcn = checked(lcn + runOffset);
+                        }
+                        catch (OverflowException exception)
+                        {
+                            throw new NtfsException("A non-resident data run exceeds the supported address range.", exception);
+                        }
+
+                        if (lcn < 0)
+                        {
+                            throw new NtfsException("A non-resident data run resolves to a negative logical cluster number.");
+                        }
                     }
 
-                    Lcn += RunOffset;
-                    Vcn += RunLength;
-
-                    /* Determine how many and which bytes we want to read. If we don't need
-                       any bytes from this extent then loop. */
-                    var ExtentVcn = (ulong)((Vcn - RunLength) * _diskInfo.BytesPerSector * _diskInfo.SectorsPerCluster);
-                    var ExtentLcn = (ulong)(Lcn * _diskInfo.BytesPerSector * _diskInfo.SectorsPerCluster);
-                    var ExtentLength = (ulong)(RunLength * _diskInfo.BytesPerSector * _diskInfo.SectorsPerCluster);
-
-                    if (Offset >= ExtentVcn + ExtentLength)
-                    {
-                        continue;
-                    }
-
-                    if (Offset > ExtentVcn)
-                    {
-                        ExtentLcn = ExtentLcn + Offset - ExtentVcn;
-                        ExtentLength -= (Offset - ExtentVcn);
-                        ExtentVcn = Offset;
-                    }
-
-                    if (Offset + WantedLength <= ExtentVcn)
+                    if (runOffset == 0 || offset >= extentEnd || requestedEnd <= extentOffset)
                     {
                         continue;
                     }
 
-                    if (Offset + WantedLength < ExtentVcn + ExtentLength)
-                    {
-                        ExtentLength = Offset + WantedLength - ExtentVcn;
-                    }
-
-                    if (ExtentLength == 0)
-                    {
-                        continue;
-                    }
-
-                    ReadFile(bufPtr + ExtentVcn - Offset, ExtentLength, ExtentLcn);
+                    var readStart = Math.Max(offset, extentOffset);
+                    var readEnd = Math.Min(requestedEnd, extentEnd);
+                    var length = readEnd - readStart;
+                    var logicalClusterOffset = CheckedMultiply(checked((ulong)lcn), bytesPerCluster, "The non-resident logical cluster offset");
+                    var physicalOffset = CheckedAdd(
+                        logicalClusterOffset,
+                        readStart - extentOffset,
+                        "The non-resident physical read offset"
+                    );
+                    var destinationOffset = CheckedByteLength(readStart - offset, "The non-resident buffer offset");
+                    ReadFile(bufferPointer + destinationOffset, length, physicalOffset);
                 }
+            }
+
+            if (!sawTerminator)
+            {
+                throw new NtfsException("The non-resident data-run array is not terminated.");
             }
 
             return buffer;

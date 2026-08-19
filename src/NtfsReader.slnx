@@ -4,5 +4,6 @@
     <Platform Name="x64" />
     <Platform Name="x86" />
   </Configurations>
+  <Project Path="NtfsReader.Tests/NtfsReader.Tests.csproj" />
   <Project Path="NtfsReader/NtfsReader.csproj" />
 </Solution>
